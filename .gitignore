@@ -1,0 +1,21 @@
+# 构建中间目录与产物 (每个库独立: <lib>/work, <lib>/out, <lib>/dist)
+work/
+out/
+dist/
+*/work/
+*/out/
+*/dist/
+
+# V8 depot_tools / 源码检出 (体积巨大, 不入库)
+*/v8-src/
+*/depot_tools/
+.gclient
+.gclient_entries
+
+# OpenHarmony 工具链下载
+command-line-tools/
+*.zip
+*.tar.gz
+
+# 系统文件
+.DS_Store

@@ -1,0 +1,11 @@
+# V8 GN 平台基础参数: macOS Intel (x86_64)
+# 可调参数 (is_debug / symbol_level / i18n / wasm / pointer_compression 等)
+# 与固定参数 (v8_monolithic 等) 由 v8/scripts/build_unix.sh 依据 config.env 追加。
+target_os = "mac"
+target_cpu = "x64"
+v8_target_cpu = "x64"
+
+# 用 V8 自带 libc++ 编译 (原因同 macos-arm64.gn: Xcode SDK libc++ 与
+# partition_alloc 的 force-hidden new/delete 冲突)。
+# build_unix.sh 会把 libc++/libc++abi 合并进 monolith，产出自包含单一 .a。
+use_custom_libcxx = true

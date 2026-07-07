@@ -1,0 +1,16 @@
+# V8 GN 平台基础参数: Linux x86_64 (native)
+# 可调参数与固定参数由 v8/scripts/build_unix.sh 依据 config.env 追加。
+target_os = "linux"
+target_cpu = "x64"
+v8_target_cpu = "x64"
+
+# 使用 Chromium 下载的 sysroot (debian_bullseye)，保证与 CI 环境无关的稳定构建，
+# 同时让产物链接到较老的 glibc，便于分发到更老的发行版。
+use_sysroot = true
+
+# 用 V8 自带 libc++ 编译。
+# 原因: sysroot(bullseye) 自带的 libstdc++ 10 没有 C++20 的 std::bit_cast，
+#       用系统 libstdc++ (use_custom_libcxx=false) 会在 src/base/macros.h 编译失败。
+# 注意: v8_monolith.a 本身不含 libc++ 符号；build_unix.sh 会把 libc++/libc++abi
+#       静态库合并进 monolith，产出自包含的单一 .a，下游仍只需链接 libv8_monolith.a。
+use_custom_libcxx = true

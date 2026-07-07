@@ -1,0 +1,14 @@
+# V8 GN 平台基础参数: macOS Apple Silicon (arm64)
+# 可调参数 (is_debug / symbol_level / i18n / wasm / pointer_compression 等)
+# 与固定参数 (v8_monolithic 等) 由 v8/scripts/build_unix.sh 依据 config.env 追加。
+target_os = "mac"
+target_cpu = "arm64"
+v8_target_cpu = "arm64"
+
+# 用 V8 自带 libc++ 编译。
+# 原因: partition_alloc allocator shim 会用 -fvisibility-global-new-delete=force-hidden
+#       强制 operator new/delete 为 hidden，而 Xcode SDK 自带 libc++ 的 <new> 把它们
+#       声明成 default 可见性 (use_custom_libcxx=false)，两者冲突导致编译失败。
+# 注意: v8_monolith.a 本身不含 libc++ 符号；build_unix.sh 会把 libc++/libc++abi
+#       静态库合并进 monolith，产出自包含的单一 .a，下游仍只需链接 libv8_monolith.a。
+use_custom_libcxx = true

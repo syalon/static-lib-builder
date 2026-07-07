@@ -1,0 +1,309 @@
+name: Build libavif + dav1d (static, multi-platform)
+
+# 触发方式: 仅手动 workflow_dispatch。
+#   - 用平台开关选择要编译哪些平台 (默认全开)。
+#   - 勾选 publish 可在构建后创建 GitHub Release (需填 release_tag，留空回退 config.env)。
+on:
+  workflow_dispatch:
+    inputs:
+      build_apple:
+        description: "编译 Apple (macOS + iOS)"
+        type: boolean
+        default: true
+      build_linux:
+        description: "编译 Linux x86_64"
+        type: boolean
+        default: true
+      build_android:
+        description: "编译 Android (arm64-v8a + armeabi-v7a)"
+        type: boolean
+        default: true
+      build_harmony:
+        description: "编译 HarmonyOS (arm64-v8a)"
+        type: boolean
+        default: true
+      build_windows:
+        description: "编译 Windows x64 (MSVC + MinGW 两个版本)"
+        type: boolean
+        default: true
+      publish:
+        description: "编译后是否创建 GitHub Release"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release 标签名 (publish 时必填；留空回退 config.env 版本号)"
+        type: string
+        default: ""
+
+# 版本集中在 libavif/config.env，构建脚本会自动 source。
+
+jobs:
+  # ===========================================================================
+  # Apple: macOS(arm64/x86_64) + iOS(设备 arm64 / 模拟器 arm64,x86_64)
+  # ===========================================================================
+  apple:
+    name: apple (${{ matrix.target }})
+    if: inputs.build_apple
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - macos-arm64
+          - macos-x86_64
+          - ios-arm64
+          - ios-sim-arm64
+          - ios-sim-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          brew install meson ninja nasm pkg-config
+
+      - name: Build ${{ matrix.target }}
+        run: bash libavif/scripts/build_unix.sh ${{ matrix.target }}
+
+      - name: Package ${{ matrix.target }}
+        run: bash libavif/scripts/package.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target }}
+          path: libavif/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Linux x86_64 (native gcc)
+  # ===========================================================================
+  linux:
+    name: linux (linux-x86_64)
+    if: inputs.build_linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm pkg-config cmake
+
+      - name: Build linux-x86_64
+        run: bash libavif/scripts/build_unix.sh linux-x86_64
+
+      - name: Package linux-x86_64
+        run: bash libavif/scripts/package.sh linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux-x86_64
+          path: libavif/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Android: arm64-v8a / armeabi-v7a (NDK 交叉编译)
+  # ===========================================================================
+  android:
+    name: android (${{ matrix.target }})
+    if: inputs.build_android
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - android-arm64-v8a
+          - android-armeabi-v7a
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm pkg-config cmake
+
+      - name: Build ${{ matrix.target }}
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "Using NDK: $ANDROID_NDK_HOME"
+          bash libavif/scripts/build_unix.sh ${{ matrix.target }}
+
+      - name: Package ${{ matrix.target }}
+        run: bash libavif/scripts/package.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target }}
+          path: libavif/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # HarmonyOS / OpenHarmony: arm64-v8a (OpenHarmony NDK 交叉编译)
+  # ===========================================================================
+  harmony:
+    name: harmony (harmony-arm64-v8a)
+    if: inputs.build_harmony
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm pkg-config cmake
+
+      - name: Load OHOS_CLI_VERSION from config.env
+        run: |
+          echo "OHOS_CLI_VERSION=$(grep -E '^OHOS_CLI_VERSION=' libavif/config.env | cut -d= -f2 | tr -d '[:space:]')" >> "$GITHUB_ENV"
+
+      - name: Cache OpenHarmony commandline-tools
+        id: cache-ohos
+        uses: actions/cache@v4
+        with:
+          path: command-line-tools
+          key: ohos-cli-${{ env.OHOS_CLI_VERSION }}
+
+      - name: Download OpenHarmony commandline-tools
+        if: steps.cache-ohos.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          url="https://huggingface.co/csukuangfj/harmonyos-commandline-tools/resolve/main/commandline-tools-linux-x64-${OHOS_CLI_VERSION}.zip"
+          curl -SL -o ohos-cli.zip "$url"
+          unzip -q ohos-cli.zip
+          rm -f ohos-cli.zip
+
+      - name: Build harmony-arm64-v8a
+        env:
+          OHOS_SDK_NATIVE: ${{ github.workspace }}/command-line-tools/sdk/default/openharmony/native
+        run: |
+          # 使用 OpenHarmony 自带 cmake，保证与 ohos.toolchain.cmake 匹配
+          export PATH="${OHOS_SDK_NATIVE}/build-tools/cmake/bin:${PATH}"
+          bash libavif/scripts/build_unix.sh harmony-arm64-v8a
+
+      - name: Package harmony-arm64-v8a
+        run: bash libavif/scripts/package.sh harmony-arm64-v8a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-harmony-arm64-v8a
+          path: libavif/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Windows x64 (MSVC) —— 产物 dav1d.lib / avif.lib
+  # ===========================================================================
+  windows-msvc:
+    name: windows (windows-x64-msvc)
+    if: inputs.build_windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install meson & ninja
+        run: pip install meson ninja
+
+      - name: Build windows-x64-msvc
+        shell: pwsh
+        run: pwsh libavif/scripts/build_windows.ps1 -Target windows-x64-msvc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows-x64-msvc
+          path: libavif/dist/*.zip
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Windows x64 (MinGW-w64, 在 Linux 上交叉编译) —— 产物 libdav1d.a / libavif.a
+  # ===========================================================================
+  windows-mingw:
+    name: windows (windows-x64-mingw)
+    if: inputs.build_windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm pkg-config cmake mingw-w64
+
+      - name: Build windows-x64-mingw
+        run: bash libavif/scripts/build_unix.sh windows-x64-mingw
+
+      - name: Package windows-x64-mingw
+        run: bash libavif/scripts/package.sh windows-x64-mingw
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows-x64-mingw
+          path: libavif/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # 汇总所有平台产物 -> GitHub Release (仅手动 publish 时)
+  # ===========================================================================
+  release:
+    name: release
+    needs: [apple, linux, android, harmony, windows-msvc, windows-mingw]
+    runs-on: ubuntu-latest
+    # always(): 即使部分平台被手动跳过也能汇总；但任一被选中的平台失败/取消则不发布。
+    if: >-
+      always()
+      && inputs.publish
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "${tag}" ]]; then
+            # 未填写时回退到 config.env 中的版本号
+            # shellcheck disable=SC1091
+            source libavif/config.env
+            tag="${PACKAGE_VERSION:-${LIBAVIF_VERSION}}"
+          fi
+          if [[ -z "${tag}" ]]; then
+            echo "publish 需要填写 release_tag，或在 libavif/config.env 中设置 LIBAVIF_VERSION" >&2
+            exit 1
+          fi
+          echo "name=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: pkg-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts
+
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false

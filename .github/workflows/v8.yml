@@ -1,0 +1,211 @@
+name: Build V8 (static monolith, multi-platform)
+
+# 触发方式: 仅手动 workflow_dispatch。
+#   - 用平台开关选择要编译哪些平台。
+#   - 所有构建配置 (V8 版本 / i18n / 指针压缩等) 一律以 v8/config.env 为准，
+#     表单不再暴露, 改配置请直接修改 v8/config.env。
+#   - 勾选 publish 可在构建后创建 GitHub Release (需填 release_tag，留空回退 config.env)。
+#
+# 说明: V8 用 GN + Ninja + depot_tools 构建，编译远慢于 libavif。
+#   各平台 job timeout 设为 360 分钟 (GitHub 托管 runner 单 job 硬上限)。
+on:
+  workflow_dispatch:
+    inputs:
+      build_macos:
+        description: "编译 macOS (arm64 + x86_64)"
+        type: boolean
+        default: true
+      build_windows:
+        description: "编译 Windows (x64, MSVC)"
+        type: boolean
+        default: true
+      build_linux:
+        description: "编译 Linux (x86_64)"
+        type: boolean
+        default: true
+      build_android:
+        description: "编译 Android (arm64-v8a)"
+        type: boolean
+        default: true
+      publish:
+        description: "编译后是否创建 GitHub Release"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release 标签名 (publish 时必填；留空回退 config.env 版本号)"
+        type: string
+        default: ""
+
+jobs:
+  # ===========================================================================
+  # macOS arm64 + x86_64 (同一 runner；x86_64 在 Apple Silicon 上为 GN 交叉编译)
+  # ===========================================================================
+  macos:
+    name: v8 (${{ matrix.target }})
+    if: inputs.build_macos
+    # V8 要求 macOS SDK >= 15；macos-15 runner 带 Xcode 16 (SDK 15+)。macos-14 (SDK 14.x) 会失败。
+    runs-on: macos-15
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - macos-arm64
+          - macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch V8
+        run: bash v8/scripts/fetch.sh ${{ matrix.target }}
+
+      - name: Build ${{ matrix.target }}
+        run: bash v8/scripts/build_unix.sh ${{ matrix.target }}
+
+      - name: Package ${{ matrix.target }}
+        run: bash v8/scripts/package.sh ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-${{ matrix.target }}
+          path: v8/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Linux x86_64 (native)
+  # ===========================================================================
+  linux:
+    name: v8 (linux-x86_64)
+    if: inputs.build_linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch V8
+        run: bash v8/scripts/fetch.sh linux-x86_64
+
+      - name: Install host build deps
+        run: |
+          if [ -f v8/v8-src/build/install-build-deps.sh ]; then
+            sudo bash v8/v8-src/build/install-build-deps.sh --no-prompt --no-chromeos-fonts || true
+          fi
+
+      - name: Build linux-x86_64
+        run: bash v8/scripts/build_unix.sh linux-x86_64
+
+      - name: Package linux-x86_64
+        run: bash v8/scripts/package.sh linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-linux-x86_64
+          path: v8/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Android arm64-v8a (NDK 交叉，NDK 由 gclient 自带)
+  # ===========================================================================
+  android:
+    name: v8 (android-arm64-v8a)
+    if: inputs.build_android
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch V8
+        run: bash v8/scripts/fetch.sh android-arm64-v8a
+
+      - name: Install host build deps (含 android)
+        run: |
+          if [ -f v8/v8-src/build/install-build-deps.sh ]; then
+            sudo bash v8/v8-src/build/install-build-deps.sh --no-prompt --android --no-chromeos-fonts || true
+          fi
+
+      - name: Build android-arm64-v8a
+        run: bash v8/scripts/build_unix.sh android-arm64-v8a
+
+      - name: Package android-arm64-v8a
+        run: bash v8/scripts/package.sh android-arm64-v8a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-android-arm64-v8a
+          path: v8/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ===========================================================================
+  # Windows x64 (MSVC / clang-cl)
+  # ===========================================================================
+  windows:
+    name: v8 (windows-x64-msvc)
+    if: inputs.build_windows
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + package windows-x64-msvc
+        shell: pwsh
+        run: pwsh v8/scripts/build_windows.ps1 -Target windows-x64-msvc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-windows-x64-msvc
+          path: v8/dist/*.zip
+          if-no-files-found: error
+
+  # ===========================================================================
+  # 汇总所有平台产物 -> GitHub Release (仅手动 publish 时)
+  # ===========================================================================
+  release:
+    name: release
+    needs: [macos, linux, android, windows]
+    runs-on: ubuntu-latest
+    if: >-
+      always()
+      && inputs.publish
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "${tag}" ]]; then
+            # shellcheck disable=SC1091
+            source v8/config.env
+            tag="v8-${PACKAGE_VERSION:-${V8_VERSION}}"
+          fi
+          if [[ -z "${tag}" ]]; then
+            echo "publish 需要填写 release_tag，或在 v8/config.env 中设置 V8_VERSION" >&2
+            exit 1
+          fi
+          echo "name=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: v8-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts
+
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false

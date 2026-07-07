@@ -1,0 +1,8 @@
+# V8 GN 平台基础参数: Windows x64 (MSVC / clang-cl)
+# 可调参数与固定参数由 v8/scripts/build_windows.ps1 依据 config.env 追加。
+target_os = "win"
+target_cpu = "x64"
+v8_target_cpu = "x64"
+
+# 使用 clang-cl (Chromium 默认)，产出 MSVC ABI 的 v8_monolith.lib。
+is_clang = true
