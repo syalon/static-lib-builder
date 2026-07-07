@@ -11,6 +11,7 @@
 | 目录 | 库 | 说明 | 支持平台 |
 | --- | --- | --- | --- |
 | [`libavif/`](libavif/) | libavif + dav1d | AVIF 解码（dav1d 仅解码） | macOS / iOS / Linux / Android / HarmonyOS / Windows(MSVC+MinGW) |
+| [`ffmpeg/`](ffmpeg/) | FFmpeg 7.1 minimal | 内部引擎视频解码（minimal 编解码器子集） | 同上 |
 | [`v8/`](v8/) | V8 | Google JavaScript 引擎 (monolith 静态库) | macOS(arm64/x86_64) / Linux(x64) / Android(arm64) / Windows(x64 MSVC) |
 
 > 新增库请参考 [docs/adding-a-new-library.md](docs/adding-a-new-library.md)。
@@ -27,12 +28,16 @@
 │   ├── config.env             # 版本与构建开关 (单一配置入口)
 │   ├── cross/                 # meson 交叉文件说明
 │   └── scripts/               # build_unix.sh / build_windows.ps1 / package.sh
+├── ffmpeg/
+│   ├── config.env             # minimal codecs 列表 + FFmpeg 版本
+│   └── scripts/               # configure_minimal.sh / build_* / package.sh
 ├── v8/
 │   ├── config.env
 │   ├── gn_args/               # 各平台 GN 基础参数模板
 │   └── scripts/               # fetch.sh / build_unix.sh / build_windows.ps1 / package.sh
 └── .github/workflows/
     ├── libavif.yml            # 仅手动触发
+    ├── ffmpeg.yml             # 仅手动触发
     └── v8.yml                 # 仅手动触发
 ```
 
@@ -128,6 +133,64 @@ target_link_libraries(your_target PRIVATE
 
 pkg-config：`PKG_CONFIG_PATH=${AVIF_ROOT}/lib/pkgconfig pkg-config --cflags --libs libavif`。
 各平台交叉工具链见 [`libavif/cross/meson/README.md`](libavif/cross/meson/README.md)。
+
+---
+
+# FFmpeg minimal
+
+从 FFmpeg **7.1** 源码交叉编译 **minimal static** 库，configure 参数与
+内部引擎视频模块一致（体积小、编解码器子集固定）。
+
+## 支持平台
+
+与 libavif 相同矩阵：`macos-*` / `ios-*` / `linux-x86_64` / `android-*` /
+`harmony-arm64-v8a` / `windows-x64-msvc` / `windows-x64-mingw`。
+
+产物包名：`ffmpeg-minimal-<ver>-<target>.tar.gz`（MSVC 为 `.zip`）。
+
+包内结构（供 `FFMPEG_DIR` 使用）：
+
+```
+include/          # libavcodec libavformat libavutil libswscale libswresample 头文件
+lib/              # 静态库 (*.a / *.lib)
+LICENSE-ffmpeg
+BUILD_INFO.txt    # 含 decoder/demuxer 列表
+```
+
+## 配置入口 [`ffmpeg/config.env`](ffmpeg/config.env)
+
+| 键 | 含义 |
+| --- | --- |
+| `FFMPEG_VERSION` | 源码分支 `release/7.1` |
+| `FFMPEG_DECODERS` | vp9 h264 aac vorbis opus mp3 pcm_s16le pcm_f32le |
+| `FFMPEG_DEMUXERS` | matroska mov mp3 wav ogg flac |
+| `FFMPEG_PARSERS` | vp9 h264 aac opus vorbis mpegaudio |
+| `FFMPEG_PROTOCOLS` | file |
+| `FFMPEG_ENABLE_*` | 启用的子库：avcodec avformat swscale swresample |
+
+许可默认 **LGPL**（`FFMPEG_ENABLE_GPL=0`），与引擎默认一致。
+
+## 本地构建
+
+```bash
+bash ffmpeg/scripts/build_unix.sh linux-x86_64
+bash ffmpeg/scripts/package.sh linux-x86_64
+
+ANDROID_NDK_HOME=... bash ffmpeg/scripts/build_unix.sh android-arm64-v8a
+OHOS_SDK_NATIVE=.../native bash ffmpeg/scripts/build_unix.sh harmony-arm64-v8a
+
+pwsh ffmpeg/scripts/build_windows.ps1 -Target windows-x64-msvc
+bash ffmpeg/scripts/package.sh windows-x64-msvc
+```
+
+## 下游链接
+
+MSVC 等需预编译包的平台，解压后：
+
+```bash
+export FFMPEG_DIR=/path/to/ffmpeg-minimal-7.1-windows-x64-msvc
+# 引擎侧关闭源码内建编译，改走 FFMPEG_DIR 链接
+```
 
 ---
 

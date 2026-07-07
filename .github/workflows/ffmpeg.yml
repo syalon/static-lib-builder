@@ -1,0 +1,252 @@
+name: Build FFmpeg minimal static (multi-platform)
+
+# 内部引擎 minimal 视频模块用的预编译 FFmpeg 静态库。
+# 仅手动触发；产物供下游设 FFMPEG_DIR 或 fetch 脚本消费。
+on:
+  workflow_dispatch:
+    inputs:
+      build_apple:
+        description: "编译 Apple (macOS + iOS)"
+        type: boolean
+        default: true
+      build_linux:
+        description: "编译 Linux x86_64"
+        type: boolean
+        default: true
+      build_android:
+        description: "编译 Android (arm64-v8a + armeabi-v7a)"
+        type: boolean
+        default: true
+      build_harmony:
+        description: "编译 HarmonyOS (arm64-v8a)"
+        type: boolean
+        default: true
+      build_windows:
+        description: "编译 Windows x64 (MSVC + MinGW)"
+        type: boolean
+        default: true
+      publish:
+        description: "编译后是否创建 GitHub Release"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release 标签名 (publish 时必填；留空回退 config.env)"
+        type: string
+        default: ""
+
+jobs:
+  apple:
+    name: apple (${{ matrix.target }})
+    if: inputs.build_apple
+    runs-on: macos-14
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - macos-arm64
+          - macos-x86_64
+          - ios-arm64
+          - ios-sim-arm64
+          - ios-sim-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install nasm pkg-config
+      - name: Build ${{ matrix.target }}
+        run: bash ffmpeg/scripts/build_unix.sh ${{ matrix.target }}
+      - name: Package ${{ matrix.target }}
+        run: bash ffmpeg/scripts/package.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target }}
+          path: ffmpeg/dist/*.tar.gz
+          if-no-files-found: error
+
+  linux:
+    name: linux (linux-x86_64)
+    if: inputs.build_linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm pkg-config build-essential
+      - name: Build linux-x86_64
+        run: bash ffmpeg/scripts/build_unix.sh linux-x86_64
+      - name: Package linux-x86_64
+        run: bash ffmpeg/scripts/package.sh linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux-x86_64
+          path: ffmpeg/dist/*.tar.gz
+          if-no-files-found: error
+
+  android:
+    name: android (${{ matrix.target }})
+    if: inputs.build_android
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - android-arm64-v8a
+          - android-armeabi-v7a
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm pkg-config build-essential
+      - name: Build ${{ matrix.target }}
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "Using NDK: $ANDROID_NDK_HOME"
+          bash ffmpeg/scripts/build_unix.sh ${{ matrix.target }}
+      - name: Package ${{ matrix.target }}
+        run: bash ffmpeg/scripts/package.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target }}
+          path: ffmpeg/dist/*.tar.gz
+          if-no-files-found: error
+
+  harmony:
+    name: harmony (harmony-arm64-v8a)
+    if: inputs.build_harmony
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm pkg-config build-essential unzip curl
+      - name: Load OHOS_CLI_VERSION
+        run: |
+          echo "OHOS_CLI_VERSION=$(grep -E '^OHOS_CLI_VERSION=' ffmpeg/config.env | cut -d= -f2 | tr -d '[:space:]')" >> "$GITHUB_ENV"
+      - name: Cache OpenHarmony CLI
+        uses: actions/cache@v4
+        with:
+          path: command-line-tools
+          key: ohos-cli-${{ env.OHOS_CLI_VERSION }}
+      - name: Download OpenHarmony CLI
+        run: |
+          if [ ! -d command-line-tools ]; then
+            url="https://huggingface.co/csukuangfj/harmonyos-commandline-tools/resolve/main/commandline-tools-linux-x64-${OHOS_CLI_VERSION}.zip"
+            curl -fSL -o ohos-cli.zip "$url"
+            unzip -q ohos-cli.zip
+            rm -f ohos-cli.zip
+          fi
+      - name: Build harmony-arm64-v8a
+        env:
+          OHOS_SDK_NATIVE: ${{ github.workspace }}/command-line-tools/sdk/default/openharmony/native
+        run: bash ffmpeg/scripts/build_unix.sh harmony-arm64-v8a
+      - name: Package harmony-arm64-v8a
+        run: bash ffmpeg/scripts/package.sh harmony-arm64-v8a
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-harmony-arm64-v8a
+          path: ffmpeg/dist/*.tar.gz
+          if-no-files-found: error
+
+  windows-msvc:
+    name: windows (windows-x64-msvc)
+    if: inputs.build_windows
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: ilammy/setup-nasm@v1
+      - name: Build windows-x64-msvc
+        shell: pwsh
+        run: pwsh ffmpeg/scripts/build_windows.ps1 -Target windows-x64-msvc
+      - name: Package windows-x64-msvc
+        shell: bash
+        run: bash ffmpeg/scripts/package.sh windows-x64-msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows-x64-msvc
+          path: ffmpeg/dist/*.zip
+          if-no-files-found: error
+
+  windows-mingw:
+    name: windows (windows-x64-mingw)
+    if: inputs.build_windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw + nasm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm pkg-config build-essential mingw-w64
+      - name: Build windows-x64-mingw
+        run: bash ffmpeg/scripts/build_unix.sh windows-x64-mingw
+      - name: Package windows-x64-mingw
+        run: bash ffmpeg/scripts/package.sh windows-x64-mingw
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows-x64-mingw
+          path: ffmpeg/dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: [apple, linux, android, harmony, windows-msvc, windows-mingw]
+    runs-on: ubuntu-latest
+    # always(): 即使部分平台被手动跳过也能汇总；但任一被选中的平台失败/取消则不发布。
+    if: >-
+      always()
+      && inputs.publish
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "${tag}" ]]; then
+            # 未填写时回退到 config.env 中的版本号
+            # shellcheck disable=SC1091
+            source ffmpeg/config.env
+            tag="${PACKAGE_VERSION:-${FFMPEG_VERSION}}"
+          fi
+          if [[ -z "${tag}" ]]; then
+            echo "publish 需要填写 release_tag，或在 ffmpeg/config.env 中设置 FFMPEG_VERSION" >&2
+            exit 1
+          fi
+          echo "name=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: pkg-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts
+
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false
