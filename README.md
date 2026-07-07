@@ -179,7 +179,8 @@ bash ffmpeg/scripts/package.sh linux-x86_64
 ANDROID_NDK_HOME=... bash ffmpeg/scripts/build_unix.sh android-arm64-v8a
 OHOS_SDK_NATIVE=.../native bash ffmpeg/scripts/build_unix.sh harmony-arm64-v8a
 
-pwsh ffmpeg/scripts/build_windows.ps1 -Target windows-x64-msvc
+# Windows MSVC：需在已激活 MSVC 环境的 MSYS2 shell 中运行（用 MSYS2 的 make）
+bash ffmpeg/scripts/build_windows_msvc.sh
 bash ffmpeg/scripts/package.sh windows-x64-msvc
 ```
 
