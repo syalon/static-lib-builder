@@ -261,14 +261,12 @@ target_link_libraries(your_target PRIVATE ${V8_ROOT}/lib/libv8_monolith.a)
 嵌入示例见 [V8 官方 embed 文档](https://v8.dev/docs/embed)。注意下游的
 `v8_enable_pointer_compression` 等编译期开关须与本仓库产物一致。
 
-> Linux 与 macOS 版都用 V8 自带 libc++ 编译，并已把 `libc++`/`libc++abi` 合并进
-> `libv8_monolith.a`，下游仍只需链接这一个 `.a`。
-> - Linux 起因：sysroot 的 libstdc++ 太老、缺 `std::bit_cast`；下游用系统 gcc/clang（走
->   libstdc++）与内部 libc++ 的 `std::__1` 符号一般互不冲突。
-> - macOS 起因：Xcode SDK 的 libc++ 与 partition_alloc 的 `-fvisibility-global-new-delete=force-hidden`
->   冲突（`operator new/delete` 可见性不一致）。
+> **macOS**：`use_custom_libcxx=false`，使用 Xcode SDK libc++ (`std::__1`)，与下游 shim 一致；
+> 通过关闭 `use_allocator_shim` / `use_partition_alloc_as_malloc` 避免与 SDK libc++ 的
+> `operator new/delete` 可见性冲突。下游链接 `libv8_monolith.a` 即可。
 >
-> 若下游自身也静态链接同一套 libc++，可能出现符号重复，属自带 libc++ 嵌入的已知取舍。
+> **Linux**：仍用 V8 自带 libc++ 编译，并把 `libc++`/`libc++abi` 合并进 `libv8_monolith.a`
+> （bullseye sysroot 的 libstdc++ 太老、缺 `std::bit_cast`）。Linux 侧后续计划同样改为系统 STL。
 
 ## 实现说明
 

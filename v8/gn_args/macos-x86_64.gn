@@ -5,7 +5,10 @@ target_os = "mac"
 target_cpu = "x64"
 v8_target_cpu = "x64"
 
-# 用 V8 自带 libc++ 编译 (原因同 macos-arm64.gn: Xcode SDK libc++ 与
-# partition_alloc 的 force-hidden new/delete 冲突)。
-# build_unix.sh 会把 libc++/libc++abi 合并进 monolith，产出自包含单一 .a。
-use_custom_libcxx = true
+# --- STL 与分配器 (与下游系统 libc++ 对齐，原因同 macos-arm64.gn) ------------
+#
+# 关闭 allocator shim + PA-as-malloc，避免 force-hidden new/delete 与 SDK libc++ 冲突；
+# 使用系统 libc++ (std::__1)，使下游链接 V8 公开 API 时 mangling 一致。
+use_allocator_shim = false
+use_partition_alloc_as_malloc = false
+use_custom_libcxx = false

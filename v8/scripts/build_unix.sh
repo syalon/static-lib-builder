@@ -38,11 +38,11 @@ esac
 
 # 用 V8 自带 libc++ (use_custom_libcxx=true) 的目标: monolith 不含 libc++ 符号，
 # 需把 libc++/libc++abi 合并进 monolith，产出自包含单一 .a。须与 gn_args/<target>.gn 一致。
-# (macOS: Xcode SDK libc++ 与 partition_alloc 的 force-hidden new/delete 冲突;
-#  Linux: bullseye sysroot 的 libstdc++ 太老、缺 std::bit_cast; 故两者都用自带 libc++。)
+# macOS 已改 use_custom_libcxx=false (关 allocator shim，与下游系统 libc++ 对齐)，不再合并。
+# Linux 仍因 bullseye sysroot libstdc++ 太老而暂用自带 libc++。
 case "${TARGET}" in
-  linux-x86_64|macos-arm64|macos-x86_64) USE_CUSTOM_LIBCXX=1 ;;
-  *)                                     USE_CUSTOM_LIBCXX=0 ;;
+  linux-x86_64) USE_CUSTOM_LIBCXX=1 ;;
+  *)            USE_CUSTOM_LIBCXX=0 ;;
 esac
 
 DEPOT_TOOLS="${LIB_ROOT}/depot_tools"

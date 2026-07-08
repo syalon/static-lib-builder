@@ -5,10 +5,16 @@ target_os = "mac"
 target_cpu = "arm64"
 v8_target_cpu = "arm64"
 
-# 用 V8 自带 libc++ 编译。
-# 原因: partition_alloc allocator shim 会用 -fvisibility-global-new-delete=force-hidden
-#       强制 operator new/delete 为 hidden，而 Xcode SDK 自带 libc++ 的 <new> 把它们
-#       声明成 default 可见性 (use_custom_libcxx=false)，两者冲突导致编译失败。
-# 注意: v8_monolith.a 本身不含 libc++ 符号；build_unix.sh 会把 libc++/libc++abi
-#       静态库合并进 monolith，产出自包含的单一 .a，下游仍只需链接 libv8_monolith.a。
-use_custom_libcxx = true
+# --- STL 与分配器 (与下游系统 libc++ 对齐) -----------------------------------
+#
+# 独立 embedder 应使用 Xcode SDK 自带 libc++ (std::__1)，与下游 shim / 宿主代码一致。
+# 若用 Chromium 自带 libc++ (use_custom_libcxx=true)，V8 公开 API 中的 std::unique_ptr 等
+# 会编成 std::__Cr::，下游用系统 libc++ 链接时会出现 NewDefaultPlatform 等 undefined symbol。
+#
+# 直接设 use_custom_libcxx=false 会与默认 allocator shim 冲突：shim 通过
+# -fvisibility-global-new-delete=force-hidden 隐藏 operator new/delete，而 SDK libc++
+# 的 <new> 声明为 default 可见性，导致编译失败。独立 V8 不需要 Chrome 的
+# PartitionAlloc-as-malloc，关闭 shim 即可解除该冲突。
+use_allocator_shim = false
+use_partition_alloc_as_malloc = false
+use_custom_libcxx = false
