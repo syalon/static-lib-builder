@@ -263,10 +263,12 @@ target_link_libraries(your_target PRIVATE ${V8_ROOT}/lib/libv8_monolith.a)
 
 > **macOS**：`use_custom_libcxx=false`，使用 Xcode SDK libc++ (`std::__1`)，与下游 shim 一致；
 > 通过关闭 `use_allocator_shim` / `use_partition_alloc_as_malloc` 避免与 SDK libc++ 的
-> `operator new/delete` 可见性冲突。下游链接 `libv8_monolith.a` 即可。
+> `operator new/delete` 可见性冲突。
 >
-> **Linux**：仍用 V8 自带 libc++ 编译，并把 `libc++`/`libc++abi` 合并进 `libv8_monolith.a`
-> （bullseye sysroot 的 libstdc++ 太老、缺 `std::bit_cast`）。Linux 侧后续计划同样改为系统 STL。
+> **Linux**：`use_sysroot=false` + `use_custom_libcxx=false`，在 CI 宿主机上用系统 libstdc++
+> 编译，与下游一致。产物依赖较新 glibc（ubuntu 22.04/24.04 级别），老发行版可能无法运行。
+>
+> 两平台下游均只需链接 `libv8_monolith.a`（及常规系统库）。
 
 ## 实现说明
 
