@@ -1,5 +1,6 @@
 # V8 GN 平台基础参数: Android arm64-v8a (NDK 交叉编译)
 # 可调参数与固定参数由 v8/scripts/build_unix.sh 依据 config.env 追加。
+# TLS 模型 (extra_cflags/cxxflags -ftls-model=*) 见 config.env V8_TLS_MODEL。
 # 需要在 .gclient 中加入 target_os = ['android'] 后 gclient sync (由 fetch.sh 处理)，
 # NDK 由 V8 的 DEPS 自动下载，无需外部 ANDROID_NDK_HOME。
 target_os = "android"

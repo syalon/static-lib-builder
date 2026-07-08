@@ -47,6 +47,11 @@ find "${PREFIX}/lib" -maxdepth 1 -type f -name '*.a' -exec cp {} "${STAGE}/lib/"
 copy_license "${V8_SRC}" "${STAGE}" "v8"
 
 # 构建信息
+TLS_INFO="n/a"
+case "${TARGET}" in
+  linux-x86_64|android-arm64-v8a) TLS_INFO="${V8_TLS_MODEL:-global-dynamic}" ;;
+esac
+
 write_build_info "${STAGE}/BUILD_INFO.txt" \
   "Package     : ${PKG_NAME}" \
   "Target      : ${TARGET}" \
@@ -56,6 +61,7 @@ write_build_info "${STAGE}/BUILD_INFO.txt" \
   "temporal    : ${V8_ENABLE_TEMPORAL}" \
   "ptr_compr   : ${V8_ENABLE_POINTER_COMPRESSION}" \
   "symbol_level: ${SYMBOL_LEVEL}" \
+  "tls_model   : ${TLS_INFO}" \
   "Linkage     : static (v8_monolith)"
 
 mkdir -p "${DIST}"

@@ -84,6 +84,22 @@ if [ "${TARGET}" = "android-arm64-v8a" ]; then
   echo "default_min_sdk_version = ${ANDROID_API}" >> "${ARGS_GN}"
 fi
 
+# Linux / Android (ELF): V8 monolith 常链接进 .so，须设 TLS 模型 (见 config.env V8_TLS_MODEL)。
+if [ "${TARGET}" = "linux-x86_64" ] || [ "${TARGET}" = "android-arm64-v8a" ]; then
+  TLS_MODEL="${V8_TLS_MODEL:-global-dynamic}"
+  case "${TLS_MODEL}" in
+    global-dynamic|initial-exec|local-exec) ;;
+    *) die "不支持的 V8_TLS_MODEL=${TLS_MODEL} (可选: global-dynamic, initial-exec, local-exec)" ;;
+  esac
+  {
+    echo ""
+    echo "# --- TLS 模型 (来自 config.env V8_TLS_MODEL=${TLS_MODEL}) ---"
+    echo "# V8 monolith 链接进 .so 时 local-exec 不可用；dlopen 场景须 global-dynamic。"
+    echo "extra_cflags = [ \"-ftls-model=${TLS_MODEL}\" ]"
+    echo "extra_cxxflags = [ \"-ftls-model=${TLS_MODEL}\" ]"
+  } >> "${ARGS_GN}"
+fi
+
 log "生成的 args.gn:"
 sed 's/^/    /' "${ARGS_GN}"
 
