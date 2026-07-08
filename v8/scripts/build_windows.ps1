@@ -59,6 +59,7 @@ $EnableI18n   = Get-Cfg "V8_ENABLE_I18N" "false"
 $EnableWasm   = Get-Cfg "V8_ENABLE_WEBASSEMBLY" "true"
 $EnableTemporal = Get-Cfg "V8_ENABLE_TEMPORAL" "false"
 $EnablePtrCmp = Get-Cfg "V8_ENABLE_POINTER_COMPRESSION" "true"
+$ForSharedLib = Get-Cfg "V8_MONOLITHIC_FOR_SHARED_LIBRARY" "true"
 
 $DepotTools = Join-Path $LibRoot "depot_tools"
 $V8Src      = Join-Path $LibRoot "v8-src"
@@ -115,6 +116,7 @@ $argsContent += "v8_enable_i18n_support = $EnableI18n"
 $argsContent += "v8_enable_webassembly = $EnableWasm"
 $argsContent += "v8_enable_temporal_support = $EnableTemporal"
 $argsContent += "v8_enable_pointer_compression = $EnablePtrCmp"
+$argsContent += "v8_monolithic_for_shared_library = $ForSharedLib"
 $argsContent += ""
 $argsContent += "# --- 固定参数 (产出单一静态库) ---"
 $argsContent += "v8_monolithic = true"
@@ -169,6 +171,7 @@ webassembly : $EnableWasm
 temporal    : $EnableTemporal
 ptr_compr   : $EnablePtrCmp
 symbol_level: $SymbolLevel
+for_shared  : $ForSharedLib
 Linkage     : static (v8_monolith)
 Built (UTC) : $((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss"))
 Built by    : GitHub Actions (build-static-libs)

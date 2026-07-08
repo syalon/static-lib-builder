@@ -1,6 +1,6 @@
 # V8 GN 平台基础参数: Linux x86_64 (native)
 # 可调参数与固定参数由 v8/scripts/build_unix.sh 依据 config.env 追加。
-# TLS 模型 (extra_cflags/cxxflags -ftls-model=*) 见 config.env V8_TLS_MODEL。
+# 链入动态库: config.env V8_MONOLITHIC_FOR_SHARED_LIBRARY -> v8_monolithic_for_shared_library。
 target_os = "linux"
 target_cpu = "x64"
 v8_target_cpu = "x64"

@@ -54,6 +54,11 @@ log "V8 版本      : ${V8_VERSION}"
 log "Prefix       : ${PREFIX}"
 log "并行任务数   : ${JOBS}"
 
+case "${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}" in
+  true|false) ;;
+  *) die "不支持的 V8_MONOLITHIC_FOR_SHARED_LIBRARY=${V8_MONOLITHIC_FOR_SHARED_LIBRARY} (可选: true, false)" ;;
+esac
+
 # --- 合成 args.gn ------------------------------------------------------------
 ARGS_GN="${V8_SRC}/${OUT_DIR}/args.gn"
 mkdir -p "${V8_SRC}/${OUT_DIR}"
@@ -68,6 +73,7 @@ mkdir -p "${V8_SRC}/${OUT_DIR}"
   echo "v8_enable_webassembly = ${V8_ENABLE_WEBASSEMBLY}"
   echo "v8_enable_temporal_support = ${V8_ENABLE_TEMPORAL}"
   echo "v8_enable_pointer_compression = ${V8_ENABLE_POINTER_COMPRESSION}"
+  echo "v8_monolithic_for_shared_library = ${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}"
   echo ""
   echo "# --- 固定参数 (产出单一静态库) ---"
   echo "v8_monolithic = true"
@@ -84,21 +90,35 @@ if [ "${TARGET}" = "android-arm64-v8a" ]; then
   echo "default_min_sdk_version = ${ANDROID_API}" >> "${ARGS_GN}"
 fi
 
-# Linux / Android (ELF): V8 monolith 常链接进 .so，须设 TLS 模型 (见 config.env V8_TLS_MODEL)。
-if [ "${TARGET}" = "linux-x86_64" ] || [ "${TARGET}" = "android-arm64-v8a" ]; then
-  TLS_MODEL="${V8_TLS_MODEL:-global-dynamic}"
-  case "${TLS_MODEL}" in
-    global-dynamic|initial-exec|local-exec) ;;
-    *) die "不支持的 V8_TLS_MODEL=${TLS_MODEL} (可选: global-dynamic, initial-exec, local-exec)" ;;
-  esac
-  {
-    echo ""
-    echo "# --- TLS 模型 (来自 config.env V8_TLS_MODEL=${TLS_MODEL}) ---"
-    echo "# V8 monolith 链接进 .so 时 local-exec 不可用；dlopen 场景须 global-dynamic。"
-    echo "extra_cflags = [ \"-ftls-model=${TLS_MODEL}\" ]"
-    echo "extra_cxxflags = [ \"-ftls-model=${TLS_MODEL}\" ]"
-  } >> "${ARGS_GN}"
-fi
+# Linux: 验收 isolate.o 不含 TPOFF (local-exec) 重定位，确保可链入 .so。
+verify_linux_tls_reloc() {
+  local for_shared="${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}"
+  [ "${TARGET}" = "linux-x86_64" ] || return 0
+  [ "${for_shared}" = "true" ] || return 0
+
+  local isolate_o
+  # 追加 || true: 多匹配时 head 提前关管道会让 find 收到 SIGPIPE，pipefail 下会误退出。
+  isolate_o="$(find "${V8_SRC}/${OUT_DIR}/obj" -name 'isolate.o' -path '*/execution/*' 2>/dev/null | head -1 || true)"
+  if [ -z "${isolate_o}" ]; then
+    log "WARN: 未找到 isolate.o，跳过 TLS 验收"
+    return 0
+  fi
+
+  local tpoff_count=0
+  if command -v llvm-readobj >/dev/null 2>&1; then
+    tpoff_count="$(llvm-readobj --relocs "${isolate_o}" 2>/dev/null | grep -c 'TPOFF' || true)"
+  elif command -v readelf >/dev/null 2>&1; then
+    tpoff_count="$(readelf -r "${isolate_o}" 2>/dev/null | grep -c 'TPOFF' || true)"
+  else
+    log "WARN: 无 llvm-readobj/readelf，跳过 TLS 验收"
+    return 0
+  fi
+
+  if [ "${tpoff_count}" -gt 0 ]; then
+    die "TLS 验收失败: ${isolate_o} 含 ${tpoff_count} 个 TPOFF 重定位 (local-exec)，无法链入 .so。请确认 V8_MONOLITHIC_FOR_SHARED_LIBRARY=true 并全量重编 (rm -rf v8/v8-src/out/${TARGET})。"
+  fi
+  log "TLS 验收通过: isolate.o 无 TPOFF 重定位"
+}
 
 log "生成的 args.gn:"
 sed 's/^/    /' "${ARGS_GN}"
@@ -110,6 +130,8 @@ gn gen "${OUT_DIR}"
 
 log "ninja v8_monolith"
 ninja -C "${OUT_DIR}" -j "${JOBS}" v8_monolith
+
+verify_linux_tls_reloc
 
 # --- 收集产物 ----------------------------------------------------------------
 MONOLITH="${V8_SRC}/${OUT_DIR}/obj/libv8_monolith.a"
