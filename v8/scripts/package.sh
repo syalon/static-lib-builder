@@ -53,6 +53,7 @@ write_build_info "${STAGE}/BUILD_INFO.txt" \
   "v8          : ${V8_VERSION}" \
   "i18n        : ${V8_ENABLE_I18N}" \
   "webassembly : ${V8_ENABLE_WEBASSEMBLY}" \
+  "temporal    : ${V8_ENABLE_TEMPORAL}" \
   "ptr_compr   : ${V8_ENABLE_POINTER_COMPRESSION}" \
   "symbol_level: ${SYMBOL_LEVEL}" \
   "Linkage     : static (v8_monolith)"

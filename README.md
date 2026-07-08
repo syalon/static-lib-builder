@@ -224,6 +224,7 @@ IS_DEBUG=false
 SYMBOL_LEVEL=0                         # 0=无符号(最小体积)
 V8_ENABLE_I18N=false                   # 关 ICU 可显著减小体积
 V8_ENABLE_WEBASSEMBLY=false
+V8_ENABLE_TEMPORAL=false               # 关 Temporal API 可减小体积
 V8_ENABLE_POINTER_COMPRESSION=true     # 须与下游一致
 ANDROID_API=24                         # V8 要求 >= 23
 ```

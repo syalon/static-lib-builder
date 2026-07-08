@@ -57,6 +57,7 @@ $IsDebug      = Get-Cfg "IS_DEBUG" "false"
 $SymbolLevel  = Get-Cfg "SYMBOL_LEVEL" "0"
 $EnableI18n   = Get-Cfg "V8_ENABLE_I18N" "false"
 $EnableWasm   = Get-Cfg "V8_ENABLE_WEBASSEMBLY" "true"
+$EnableTemporal = Get-Cfg "V8_ENABLE_TEMPORAL" "false"
 $EnablePtrCmp = Get-Cfg "V8_ENABLE_POINTER_COMPRESSION" "true"
 
 $DepotTools = Join-Path $LibRoot "depot_tools"
@@ -112,6 +113,7 @@ $argsContent += "is_debug = $IsDebug"
 $argsContent += "symbol_level = $SymbolLevel"
 $argsContent += "v8_enable_i18n_support = $EnableI18n"
 $argsContent += "v8_enable_webassembly = $EnableWasm"
+$argsContent += "v8_enable_temporal_support = $EnableTemporal"
 $argsContent += "v8_enable_pointer_compression = $EnablePtrCmp"
 $argsContent += ""
 $argsContent += "# --- 固定参数 (产出单一静态库) ---"
@@ -164,6 +166,7 @@ Target      : $Target
 v8          : $V8Version
 i18n        : $EnableI18n
 webassembly : $EnableWasm
+temporal    : $EnableTemporal
 ptr_compr   : $EnablePtrCmp
 symbol_level: $SymbolLevel
 Linkage     : static (v8_monolith)
