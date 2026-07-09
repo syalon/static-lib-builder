@@ -46,18 +46,47 @@ find "${PREFIX}/lib" -maxdepth 1 -type f -name '*.a' -exec cp {} "${STAGE}/lib/"
 # 许可证
 copy_license "${V8_SRC}" "${STAGE}" "v8"
 
+# Android: 从 gclient 自带的 NDK 读取 revision，便于下游对齐 NDK / libc++。
+read_v8_ndk_revision() {
+  local props="${V8_SRC}/third_party/android_toolchain/ndk/source.properties"
+  local rev=""
+  if [ -f "${props}" ]; then
+    rev="$(grep -E '^Pkg\.Revision' "${props}" | head -1 | sed 's/.*= *//' | tr -d ' \r' || true)"
+  fi
+  if [ -z "${rev}" ] && [ -f "${V8_SRC}/DEPS" ]; then
+    rev="$(sed -n "s/.*'android_ndk_version'[[:space:]]*:[[:space:]]*Str('\([^']*\)').*/\1/p" \
+      "${V8_SRC}/DEPS" | head -1 || true)"
+  fi
+  # DEPS 值形如 CIPD 版本 "2@30.0.14608247"，剥掉 "<n>@" 前缀，与 source.properties 对齐。
+  rev="${rev##*@}"
+  echo "${rev}"
+}
+
+BUILD_INFO_ARGS=(
+  "Package     : ${PKG_NAME}"
+  "Target      : ${TARGET}"
+  "v8          : ${V8_VERSION}"
+  "i18n        : ${V8_ENABLE_I18N}"
+  "webassembly : ${V8_ENABLE_WEBASSEMBLY}"
+  "temporal    : ${V8_ENABLE_TEMPORAL}"
+  "ptr_compr   : ${V8_ENABLE_POINTER_COMPRESSION}"
+  "symbol_level: ${SYMBOL_LEVEL}"
+  "for_shared  : ${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}"
+)
+
+case "${TARGET}" in
+  android-*)
+    NDK_REVISION="$(read_v8_ndk_revision)"
+    [ -n "${NDK_REVISION}" ] || warn "未解析到 NDK revision，BUILD_INFO 将省略 ndk_revision"
+    [ -n "${NDK_REVISION}" ] && BUILD_INFO_ARGS+=("ndk_revision: ${NDK_REVISION}")
+    BUILD_INFO_ARGS+=("android_api : ${ANDROID_API}")
+    ;;
+esac
+
+BUILD_INFO_ARGS+=("Linkage     : static (v8_monolith)")
+
 # 构建信息
-write_build_info "${STAGE}/BUILD_INFO.txt" \
-  "Package     : ${PKG_NAME}" \
-  "Target      : ${TARGET}" \
-  "v8          : ${V8_VERSION}" \
-  "i18n        : ${V8_ENABLE_I18N}" \
-  "webassembly : ${V8_ENABLE_WEBASSEMBLY}" \
-  "temporal    : ${V8_ENABLE_TEMPORAL}" \
-  "ptr_compr   : ${V8_ENABLE_POINTER_COMPRESSION}" \
-  "symbol_level: ${SYMBOL_LEVEL}" \
-  "for_shared  : ${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}" \
-  "Linkage     : static (v8_monolith)"
+write_build_info "${STAGE}/BUILD_INFO.txt" "${BUILD_INFO_ARGS[@]}"
 
 mkdir -p "${DIST}"
 make_archive "tar.gz" "${DIST}" "${PKG_NAME}"
