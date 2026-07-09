@@ -84,6 +84,14 @@ mkdir -p "${V8_SRC}/${OUT_DIR}"
   # (use_safe_libcxx，仅随 custom libcxx 提供)，两者冲突。嵌入场景关闭 sandbox。
   # 指针压缩与 sandbox 相互独立，关 sandbox 不影响 v8_enable_pointer_compression。
   echo "v8_enable_sandbox = false"
+  # cppgc (Oilpan / C++ 堆) 的 caged heap 开关，由 config.env V8_ENABLE_CPPGC_CAGED_HEAP 控制。
+  # 背景: 64bit (arm64/x64) 上默认开，BUILD.gn 会据此"强制" cppgc_enable_pointer_compression
+  #       =true (无法单独关)，库会带宏 CPPGC_POINTER_COMPRESSION 编译，此宏决定公开头文件里
+  #       cppgc::Member / v8::TracedReference 的布局。下游若不定义同样的宏 -> 布局错位 ->
+  #       初始化 cppgc 堆时崩溃 (典型: Android 启动即崩)。
+  # 关掉后连带关闭 young generation 与 cppgc 指针压缩，相关外部宏全部不定义，与"下游不定义
+  #       任何 cppgc 宏"对齐。此项独立于主堆的 v8_enable_pointer_compression (V8_COMPRESS_POINTERS)。
+  echo "cppgc_enable_caged_heap = ${V8_ENABLE_CPPGC_CAGED_HEAP:-false}"
 } > "${ARGS_GN}"
 
 if [ "${TARGET}" = "android-arm64-v8a" ]; then

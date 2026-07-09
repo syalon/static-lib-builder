@@ -59,6 +59,7 @@ $EnableI18n   = Get-Cfg "V8_ENABLE_I18N" "false"
 $EnableWasm   = Get-Cfg "V8_ENABLE_WEBASSEMBLY" "true"
 $EnableTemporal = Get-Cfg "V8_ENABLE_TEMPORAL" "false"
 $EnablePtrCmp = Get-Cfg "V8_ENABLE_POINTER_COMPRESSION" "true"
+$EnableCppgcCaged = Get-Cfg "V8_ENABLE_CPPGC_CAGED_HEAP" "false"
 $ForSharedLib = Get-Cfg "V8_MONOLITHIC_FOR_SHARED_LIBRARY" "true"
 
 $DepotTools = Join-Path $LibRoot "depot_tools"
@@ -126,6 +127,12 @@ $argsContent += "treat_warnings_as_errors = false"
 # 用系统/工具链 libc++ (use_custom_libcxx=false) 时 V8 sandbox 需要 libc++ 加固，冲突，
 # 嵌入场景关闭 sandbox；与指针压缩相互独立。
 $argsContent += "v8_enable_sandbox = false"
+# cppgc caged heap 开关，由 config.env V8_ENABLE_CPPGC_CAGED_HEAP 控制。64bit 上默认开，BUILD.gn
+# 会据此强制 cppgc 指针压缩=true，令库带宏 CPPGC_POINTER_COMPRESSION 编译；此宏决定公开头文件里
+# cppgc::Member 布局，下游若不定义同样的宏会布局错位并在初始化 cppgc 堆时崩。关掉后连带关掉
+# young generation 与 cppgc 指针压缩，相关外部宏全部不定义，与"下游不定义任何 cppgc 宏"对齐。
+# 此项独立于主堆的 v8_enable_pointer_compression (V8_COMPRESS_POINTERS)。
+$argsContent += "cppgc_enable_caged_heap = $EnableCppgcCaged"
 Set-Content -Path $ArgsGn -Value $argsContent -Encoding UTF8
 
 Write-Host "==> 生成的 args.gn:"
@@ -172,6 +179,8 @@ temporal    : $EnableTemporal
 ptr_compr   : $EnablePtrCmp
 symbol_level: $SymbolLevel
 for_shared  : $ForSharedLib
+cppgc_caged : $EnableCppgcCaged
+cppgc_caged_comment : false=关 caged heap/young gen/cppgc 指针压缩，下游勿定义 CPPGC_* 宏；true=恢复 V8 默认，下游须定义 CPPGC_POINTER_COMPRESSION
 Linkage     : static (v8_monolith)
 Built (UTC) : $((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss"))
 Built by    : GitHub Actions (build-static-libs)

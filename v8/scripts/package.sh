@@ -72,6 +72,8 @@ BUILD_INFO_ARGS=(
   "ptr_compr   : ${V8_ENABLE_POINTER_COMPRESSION}"
   "symbol_level: ${SYMBOL_LEVEL}"
   "for_shared  : ${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}"
+  "cppgc_caged : ${V8_ENABLE_CPPGC_CAGED_HEAP:-false}"
+  "cppgc_caged_comment : false=关 caged heap/young gen/cppgc 指针压缩，下游勿定义 CPPGC_* 宏；true=恢复 V8 默认，下游须定义 CPPGC_POINTER_COMPRESSION"
 )
 
 case "${TARGET}" in
