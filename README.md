@@ -235,7 +235,7 @@ ANDROID_API=24                         # V8 要求 >= 23
 各平台 GN 基础参数模板见 [`v8/gn_args/`](v8/gn_args/)；脚本会把 `config.env` 的可调项
 追加进最终 `args.gn`。所有构建配置**一律以 `v8/config.env` 为准**，手动触发表单只保留
 平台开关与 `publish` / `release_tag`，不再暴露构建参数——要改配置请直接改 `v8/config.env`。
-V8 14.9 的 Windows 无指针压缩构建需要修复 Torque/C++ 布局差异；拉取源码后脚本会自动应用
+V8 14.9 的 Windows 无指针压缩构建需要修复 MSVC 与 Torque 的布局差异；Windows 构建脚本会自动应用
 [`v8/patches/14.9.207.29-fix-msvc-no-pointer-compression.patch`](v8/patches/14.9.207.29-fix-msvc-no-pointer-compression.patch)。
 
 ## 本地构建

@@ -108,16 +108,28 @@ Pop-Location
 $PatchFile = Join-Path $LibRoot "patches\$V8Version-fix-msvc-no-pointer-compression.patch"
 if (-not (Test-Path $PatchFile)) { throw "未找到当前 V8 版本的补丁: $PatchFile" }
 
-& git -C $V8Src apply --reverse --check $PatchFile *> $null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "==> V8 补丁已应用: $(Split-Path -Leaf $PatchFile)"
-} else {
-    & git -C $V8Src apply --check $PatchFile *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "V8 补丁无法应用，请检查补丁是否匹配 V8 ${V8Version}: $PatchFile"
+$PatchTemp = Join-Path ([IO.Path]::GetTempPath()) "v8-$V8Version-msvc-layout.patch"
+$PatchText = [IO.File]::ReadAllText($PatchFile).Replace("`r`n", "`n")
+[IO.File]::WriteAllText($PatchTemp, $PatchText, [Text.UTF8Encoding]::new($false))
+
+try {
+    # actions/checkout 在 Windows 上可能将仓库内补丁转成 CRLF；先规范化为 LF，
+    # 再忽略源码 checkout 的行尾空白差异，确保 git apply 跨平台稳定。
+    & git -C $V8Src apply --reverse --check --ignore-space-change --ignore-whitespace $PatchTemp *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "==> V8 补丁已应用: $(Split-Path -Leaf $PatchFile)"
+    } else {
+        & git -C $V8Src apply --check --ignore-space-change --ignore-whitespace $PatchTemp *> $null
+        if ($LASTEXITCODE -ne 0) {
+            throw "V8 补丁无法应用，请检查补丁是否匹配 V8 ${V8Version}: $PatchFile"
+        }
+        Write-Host "==> 应用 V8 补丁: $(Split-Path -Leaf $PatchFile)"
+        Invoke-Checked {
+            git -C $V8Src apply --ignore-space-change --ignore-whitespace $PatchTemp
+        }
     }
-    Write-Host "==> 应用 V8 补丁: $(Split-Path -Leaf $PatchFile)"
-    Invoke-Checked { git -C $V8Src apply $PatchFile }
+} finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue $PatchTemp
 }
 
 # --- 3) 合成 args.gn ---------------------------------------------------------

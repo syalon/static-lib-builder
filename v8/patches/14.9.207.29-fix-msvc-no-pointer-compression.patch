@@ -1,16 +1,15 @@
 diff --git a/src/objects/js-atomics-synchronization.h b/src/objects/js-atomics-synchronization.h
 --- a/src/objects/js-atomics-synchronization.h
 +++ b/src/objects/js-atomics-synchronization.h
-@@ -116,6 +116,14 @@
+@@ -116,6 +116,13 @@
   public:
    ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;
    std::atomic<uint32_t> state_;
 +
 +  // MSVC reuses a base class's tail padding for derived-class fields. Torque
 +  // lays out derived fields after sizeof(JSSynchronizationPrimitive), so make
-+  // the padding explicit when tagged values are 8 bytes. This keeps the C++
-+  // and Torque offsets identical when pointer compression is disabled.
-+#if TAGGED_SIZE_8_BYTES
++  // the padding explicit for Windows builds without pointer compression.
++#if defined(V8_OS_WIN) && TAGGED_SIZE_8_BYTES
 +  uint32_t cpp_layout_padding_;
 +#endif
  } V8_OBJECT_END;
