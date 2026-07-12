@@ -1,10 +1,9 @@
 diff --git a/src/objects/js-atomics-synchronization.h b/src/objects/js-atomics-synchronization.h
-index 1a60658ac7..4d1f5f51d0 100644
 --- a/src/objects/js-atomics-synchronization.h
 +++ b/src/objects/js-atomics-synchronization.h
-@@ -121,6 +121,14 @@ class JSSynchronizationPrimitive : public AlwaysSharedSpaceJSObject {
+@@ -116,6 +116,14 @@
   public:
-   ExternalPointerMember waiter_queue_head_;
+   ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;
    std::atomic<uint32_t> state_;
 +
 +  // MSVC reuses a base class's tail padding for derived-class fields. Torque
