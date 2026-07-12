@@ -32,8 +32,21 @@ source "${REPO_ROOT}/scripts/common.sh"
 load_env "${LIB_ROOT}/config.env"
 
 case "${TARGET}" in
-  macos-arm64|macos-x86_64|linux-x86_64|android-arm64-v8a) ;;
+  macos-arm64|macos-x86_64)
+    ENABLE_POINTER_COMPRESSION="${V8_ENABLE_POINTER_COMPRESSION_MACOS:?config.env 缺少 V8_ENABLE_POINTER_COMPRESSION_MACOS}"
+    ;;
+  linux-x86_64)
+    ENABLE_POINTER_COMPRESSION="${V8_ENABLE_POINTER_COMPRESSION_LINUX:?config.env 缺少 V8_ENABLE_POINTER_COMPRESSION_LINUX}"
+    ;;
+  android-arm64-v8a)
+    ENABLE_POINTER_COMPRESSION="${V8_ENABLE_POINTER_COMPRESSION_ANDROID:?config.env 缺少 V8_ENABLE_POINTER_COMPRESSION_ANDROID}"
+    ;;
   *) die "build_unix.sh 不支持的 target: ${TARGET} (Windows 请用 build_windows.ps1)" ;;
+esac
+
+case "${ENABLE_POINTER_COMPRESSION}" in
+  true|false) ;;
+  *) die "不支持的指针压缩配置: ${ENABLE_POINTER_COMPRESSION} (可选: true, false)" ;;
 esac
 
 DEPOT_TOOLS="${LIB_ROOT}/depot_tools"
@@ -72,7 +85,7 @@ mkdir -p "${V8_SRC}/${OUT_DIR}"
   echo "v8_enable_i18n_support = ${V8_ENABLE_I18N}"
   echo "v8_enable_webassembly = ${V8_ENABLE_WEBASSEMBLY}"
   echo "v8_enable_temporal_support = ${V8_ENABLE_TEMPORAL}"
-  echo "v8_enable_pointer_compression = ${V8_ENABLE_POINTER_COMPRESSION}"
+  echo "v8_enable_pointer_compression = ${ENABLE_POINTER_COMPRESSION}"
   echo "v8_monolithic_for_shared_library = ${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}"
   echo ""
   echo "# --- 固定参数 (产出单一静态库) ---"

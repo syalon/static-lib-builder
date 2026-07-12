@@ -23,6 +23,24 @@ source "${REPO_ROOT}/scripts/common.sh"
 # 所有配置以 config.env 为唯一来源。
 load_env "${LIB_ROOT}/config.env"
 
+case "${TARGET}" in
+  macos-*)
+    ENABLE_POINTER_COMPRESSION="${V8_ENABLE_POINTER_COMPRESSION_MACOS:?config.env 缺少 V8_ENABLE_POINTER_COMPRESSION_MACOS}"
+    ;;
+  linux-*)
+    ENABLE_POINTER_COMPRESSION="${V8_ENABLE_POINTER_COMPRESSION_LINUX:?config.env 缺少 V8_ENABLE_POINTER_COMPRESSION_LINUX}"
+    ;;
+  android-*)
+    ENABLE_POINTER_COMPRESSION="${V8_ENABLE_POINTER_COMPRESSION_ANDROID:?config.env 缺少 V8_ENABLE_POINTER_COMPRESSION_ANDROID}"
+    ;;
+  *) die "package.sh 不支持的 target: ${TARGET}" ;;
+esac
+
+case "${ENABLE_POINTER_COMPRESSION}" in
+  true|false) ;;
+  *) die "不支持的指针压缩配置: ${ENABLE_POINTER_COMPRESSION} (可选: true, false)" ;;
+esac
+
 VERSION="${PACKAGE_VERSION:-}"
 [ -z "${VERSION}" ] && VERSION="${V8_VERSION}"
 
@@ -69,7 +87,7 @@ BUILD_INFO_ARGS=(
   "i18n        : ${V8_ENABLE_I18N}"
   "webassembly : ${V8_ENABLE_WEBASSEMBLY}"
   "temporal    : ${V8_ENABLE_TEMPORAL}"
-  "ptr_compr   : ${V8_ENABLE_POINTER_COMPRESSION}"
+  "ptr_compr   : ${ENABLE_POINTER_COMPRESSION}"
   "symbol_level: ${SYMBOL_LEVEL}"
   "for_shared  : ${V8_MONOLITHIC_FOR_SHARED_LIBRARY:-true}"
   "cppgc_caged : ${V8_ENABLE_CPPGC_CAGED_HEAP:-false}"

@@ -81,4 +81,16 @@ gclient sync --nohooks --no-history --shallow -D
 log "运行 gclient runhooks"
 gclient runhooks
 
+PATCH_FILE="${LIB_ROOT}/patches/${V8_VERSION}-fix-msvc-no-pointer-compression.patch"
+[ -f "${PATCH_FILE}" ] || die "未找到当前 V8 版本的补丁: ${PATCH_FILE}"
+
+if git -C "${V8_SRC}" apply --reverse --check "${PATCH_FILE}" >/dev/null 2>&1; then
+  log "V8 补丁已应用: $(basename "${PATCH_FILE}")"
+elif git -C "${V8_SRC}" apply --check "${PATCH_FILE}"; then
+  log "应用 V8 补丁: $(basename "${PATCH_FILE}")"
+  git -C "${V8_SRC}" apply "${PATCH_FILE}"
+else
+  die "V8 补丁无法应用，请检查补丁是否匹配 V8 ${V8_VERSION}: ${PATCH_FILE}"
+fi
+
 log "V8 源码就绪: ${V8_SRC}"

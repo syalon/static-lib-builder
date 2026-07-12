@@ -58,7 +58,10 @@ $SymbolLevel  = Get-Cfg "SYMBOL_LEVEL" "0"
 $EnableI18n   = Get-Cfg "V8_ENABLE_I18N" "false"
 $EnableWasm   = Get-Cfg "V8_ENABLE_WEBASSEMBLY" "true"
 $EnableTemporal = Get-Cfg "V8_ENABLE_TEMPORAL" "false"
-$EnablePtrCmp = Get-Cfg "V8_ENABLE_POINTER_COMPRESSION" "true"
+$EnablePtrCmp = Get-Cfg "V8_ENABLE_POINTER_COMPRESSION_WINDOWS" "false"
+if ($EnablePtrCmp -notin @("true", "false")) {
+    throw "不支持的 V8_ENABLE_POINTER_COMPRESSION_WINDOWS=$EnablePtrCmp (可选: true, false)"
+}
 $EnableCppgcCaged = Get-Cfg "V8_ENABLE_CPPGC_CAGED_HEAP" "false"
 $ForSharedLib = Get-Cfg "V8_MONOLITHIC_FOR_SHARED_LIBRARY" "true"
 
@@ -101,6 +104,21 @@ Write-Host "==> gclient sync (可能耗时较久)"
 Invoke-Checked { cmd /c "gclient sync --nohooks --no-history --shallow -D" }
 Invoke-Checked { cmd /c "gclient runhooks" }
 Pop-Location
+
+$PatchFile = Join-Path $LibRoot "patches\$V8Version-fix-msvc-no-pointer-compression.patch"
+if (-not (Test-Path $PatchFile)) { throw "未找到当前 V8 版本的补丁: $PatchFile" }
+
+& git -C $V8Src apply --reverse --check $PatchFile *> $null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "==> V8 补丁已应用: $(Split-Path -Leaf $PatchFile)"
+} else {
+    & git -C $V8Src apply --check $PatchFile *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "V8 补丁无法应用，请检查补丁是否匹配 V8 ${V8Version}: $PatchFile"
+    }
+    Write-Host "==> 应用 V8 补丁: $(Split-Path -Leaf $PatchFile)"
+    Invoke-Checked { git -C $V8Src apply $PatchFile }
+}
 
 # --- 3) 合成 args.gn ---------------------------------------------------------
 $OutFull = Join-Path $V8Src $OutDir

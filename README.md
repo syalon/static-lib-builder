@@ -225,13 +225,18 @@ SYMBOL_LEVEL=0                         # 0=无符号(最小体积)
 V8_ENABLE_I18N=false                   # 关 ICU 可显著减小体积
 V8_ENABLE_WEBASSEMBLY=false
 V8_ENABLE_TEMPORAL=false               # 关 Temporal API 可减小体积
-V8_ENABLE_POINTER_COMPRESSION=true     # 须与下游一致
+V8_ENABLE_POINTER_COMPRESSION_MACOS=false
+V8_ENABLE_POINTER_COMPRESSION_LINUX=false
+V8_ENABLE_POINTER_COMPRESSION_ANDROID=false
+V8_ENABLE_POINTER_COMPRESSION_WINDOWS=false
 ANDROID_API=24                         # V8 要求 >= 23
 ```
 
 各平台 GN 基础参数模板见 [`v8/gn_args/`](v8/gn_args/)；脚本会把 `config.env` 的可调项
 追加进最终 `args.gn`。所有构建配置**一律以 `v8/config.env` 为准**，手动触发表单只保留
 平台开关与 `publish` / `release_tag`，不再暴露构建参数——要改配置请直接改 `v8/config.env`。
+V8 14.9 的 Windows 无指针压缩构建需要修复 Torque/C++ 布局差异；拉取源码后脚本会自动应用
+[`v8/patches/14.9.207.29-fix-msvc-no-pointer-compression.patch`](v8/patches/14.9.207.29-fix-msvc-no-pointer-compression.patch)。
 
 ## 本地构建
 
@@ -258,8 +263,8 @@ target_link_libraries(your_target PRIVATE ${V8_ROOT}/lib/libv8_monolith.a)
 # Windows MSVC: ${V8_ROOT}/lib/v8_monolith.lib
 ```
 
-嵌入示例见 [V8 官方 embed 文档](https://v8.dev/docs/embed)。注意下游的
-`v8_enable_pointer_compression` 等编译期开关须与本仓库产物一致。
+嵌入示例见 [V8 官方 embed 文档](https://v8.dev/docs/embed)。注意下游的编译期宏须与各平台产物
+`BUILD_INFO.txt` 中的 `ptr_compr` / `cppgc_caged` 一致。
 
 > **macOS**：`use_custom_libcxx=false`，使用 Xcode SDK libc++ (`std::__1`)，与下游 shim 一致；
 > 通过关闭 `use_allocator_shim` / `use_partition_alloc_as_malloc` 避免与 SDK libc++ 的
