@@ -55,7 +55,7 @@ jobs:
           - ios-sim-arm64
           - ios-sim-x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: |
@@ -67,7 +67,7 @@ jobs:
       - name: Package ${{ matrix.target }}
         run: bash libavif/scripts/package.sh ${{ matrix.target }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pkg-${{ matrix.target }}
           path: libavif/dist/*.tar.gz
@@ -81,7 +81,7 @@ jobs:
     if: inputs.build_linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: |
@@ -94,7 +94,7 @@ jobs:
       - name: Package linux-x86_64
         run: bash libavif/scripts/package.sh linux-x86_64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pkg-linux-x86_64
           path: libavif/dist/*.tar.gz
@@ -114,7 +114,7 @@ jobs:
           - android-arm64-v8a
           - android-armeabi-v7a
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: |
@@ -130,7 +130,7 @@ jobs:
       - name: Package ${{ matrix.target }}
         run: bash libavif/scripts/package.sh ${{ matrix.target }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pkg-${{ matrix.target }}
           path: libavif/dist/*.tar.gz
@@ -144,7 +144,7 @@ jobs:
     if: inputs.build_harmony
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: |
@@ -157,7 +157,7 @@ jobs:
 
       - name: Cache OpenHarmony commandline-tools
         id: cache-ohos
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: command-line-tools
           key: ohos-cli-${{ env.OHOS_CLI_VERSION }}
@@ -182,7 +182,7 @@ jobs:
       - name: Package harmony-arm64-v8a
         run: bash libavif/scripts/package.sh harmony-arm64-v8a
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pkg-harmony-arm64-v8a
           path: libavif/dist/*.tar.gz
@@ -196,7 +196,7 @@ jobs:
     if: inputs.build_windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -207,7 +207,7 @@ jobs:
         uses: ilammy/setup-nasm@v1
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -218,7 +218,7 @@ jobs:
         shell: pwsh
         run: pwsh libavif/scripts/build_windows.ps1 -Target windows-x64-msvc
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pkg-windows-x64-msvc
           path: libavif/dist/*.zip
@@ -232,7 +232,7 @@ jobs:
     if: inputs.build_windows
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: |
@@ -245,7 +245,7 @@ jobs:
       - name: Package windows-x64-mingw
         run: bash libavif/scripts/package.sh windows-x64-mingw
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pkg-windows-x64-mingw
           path: libavif/dist/*.tar.gz
@@ -267,7 +267,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve release tag
         id: tag
@@ -288,7 +288,7 @@ jobs:
           echo "Release tag: ${tag}"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
           pattern: pkg-*

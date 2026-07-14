@@ -22,6 +22,14 @@
 import sys
 from pathlib import Path
 
+# Windows 上 Python stdout/stderr 默认可能是 cp1252，打印中文会 UnicodeEncodeError。
+# 强制 UTF-8（errors=replace 兜底），保证脚本在任何 code page 下都不因日志编码而崩。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 MARKER = "# thin archive disabled by static-lib-builder"
 
 

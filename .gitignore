@@ -19,3 +19,6 @@ command-line-tools/
 
 # 系统文件
 .DS_Store
+
+# 构建产物
+v8/scripts/__pycache__/
