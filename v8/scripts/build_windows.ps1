@@ -253,8 +253,10 @@ function Test-ArchiveDefinesSymbol {
         if ($cmd) { $nm = $cmd.Source }
     }
     if ($nm) {
-        # 类型字符取除 U/u 外任意字母 (含 weak W/V)，覆盖可重写的 __libcpp_verbose_abort
-        $hit = & $nm -g $Archive 2>$null | Select-String -Pattern " [A-TV-Za-tv-z] _?$Symbol(?![A-Za-z0-9_])"
+        # 类型字符取除 U/u 外任意字母 (含 weak W/V)。__libcpp_verbose_abort 在
+        # namespace std(__Cr) 内会被 mangle，符号名嵌在 mangled 串中间，故用 .*
+        # 允许任意前缀；` [type] ` 空格边界只命中类型字段，不会误判未定义行。
+        $hit = & $nm -g $Archive 2>$null | Select-String -Pattern " [A-TV-Za-tv-z] .*$Symbol"
         return [bool]$hit
     }
     $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
@@ -407,7 +409,11 @@ $verboseFromObjs = (Test-ObjsHaveVerboseAbort -Objs $LibcxxObjs) `
 $verboseFromNm = (Test-ArchiveDefinesSymbol -Archive $destLib -Symbol "__libcpp_verbose_abort") `
     -or (Test-ArchiveDefinesSymbol -Archive $abiDest -Symbol "__libcpp_verbose_abort")
 
-# monolith 是否自含（Windows source_set 通常为真）；作为元数据并兜底验收。
+# libcxx_merged 只由 monolith 自身是否“定义”(非 U) 该符号决定，作为下游是否需
+# 另链 libc++.lib 的元数据。实测 Windows 上 v8_monolith.lib 里 __libcpp_verbose_abort
+# 仍是 U（引用），定义只在独立 libc++.lib → 应为 false（下游必须另链 libc++.lib）。
+# 注意: 不能用“找到了 verbose_abort.obj”反推 merged=true —— 那只说明能组独立库，
+# 不代表 monolith 已自含；早期因 nm 正则 mangling bug 曾错误据此置 true。
 $LibcxxMerged = Test-ArchiveDefinesSymbol -Archive $Monolith -Symbol "__libcpp_verbose_abort"
 
 if ($verboseFromObjs) {
@@ -420,9 +426,11 @@ if ($verboseFromObjs) {
     throw "验收失败: 未在 libc++.lib / libc++abi.lib / monolith 中找到 __libcpp_verbose_abort（下游无法链接）"
 }
 
-# source_set 语义下 libc++ 必然并入 monolith；若 nm 误判为 false 但 obj 判据成立，
-# 修正元数据，避免下游误以为需另找该符号。
-if (-not $LibcxxMerged -and $verboseFromObjs) { $LibcxxMerged = $true }
+if ($LibcxxMerged) {
+    Write-Host "==> libc++ 已并入 v8_monolith.lib (libcxx_merged=true)；仍附带独立 libc++.lib"
+} else {
+    Write-Host "==> libc++ 未并入 monolith (libcxx_merged=false)，下游须另链 libc++.lib"
+}
 
 if (-not (Test-Path (Join-Path $Prefix "libcxx\include\__config_site"))) {
     throw "验收失败: 缺少 libcxx/include/__config_site"

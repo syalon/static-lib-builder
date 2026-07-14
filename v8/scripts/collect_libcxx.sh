@@ -220,10 +220,13 @@ _archive_defines_symbol() {
       return 2  # 无 nm 工具
     fi
   fi
-  # 类型字符取除 U/u 外的任意字母 (T/D/R/S/B/W/V/G/C ...)，覆盖 weak 符号；
-  # 符号名在行尾，用边界避免误匹配前缀相同的更长符号。
+  # 类型字符取除 U/u 外的任意字母 (T/D/R/S/B/W/V/G/C ...)，覆盖 weak 符号。
+  # 关键: __libcpp_verbose_abort 在 namespace std(__Cr) 内，会被 mangle 成
+  #   __ZNSt4__Cr22__libcpp_verbose_abortEPKcz，符号名嵌在 mangled 串中间，
+  #   故不能要求它紧跟类型字符，用 .* 允许任意前缀（mangling）。
+  #   ` [type] ` 的空格边界只会命中类型字段，U/u 已被排除，不会误判未定义行。
   "${nm_bin}" -g "${archive}" 2>/dev/null \
-    | grep -E " [A-TV-Za-tv-z] _?${sym}([^A-Za-z0-9_]|$)" >/dev/null
+    | grep -E " [A-TV-Za-tv-z] .*${sym}" >/dev/null
 }
 
 _require_symbol_or_die() {
