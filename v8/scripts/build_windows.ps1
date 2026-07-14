@@ -192,6 +192,8 @@ Copy-Item $Monolith (Join-Path $Prefix "lib\v8_monolith.lib")
 Copy-Item -Recurse (Join-Path $V8Src "include") (Join-Path $Prefix "include")
 
 # --- 5b) Chromium custom libc++ / libc++abi ---------------------------------
+# Windows 上 libc++ 是 source_set（无现成 libc++.lib），必须从 .obj 组库。
+# 若偶有 .lib，也可能是 thin（/llvmlibthin），不可直接发布。
 $LibcxxInc = Find-FirstExistingPath @(
     (Join-Path $V8Src "third_party\libc++\src\include")
     (Join-Path $V8Src "buildtools\third_party\libc++\trunk\include")
@@ -223,70 +225,196 @@ if ($LibcxxAbiInc) {
     Copy-Item -Recurse -Force (Join-Path $LibcxxAbiInc "*") $StageAbi
 }
 
-# 方案 1: 探测 v8_monolith.lib 是否已包含 libc++ 目标文件
-#   用 llvm-nm / dumpbin 看 __libcpp_verbose_abort 是 T/D(已定义) 还是 U(未定义)
-$LibcxxMerged = $false
-$NmCmd = Get-Command llvm-nm -ErrorAction SilentlyContinue
-if ($NmCmd) {
-    $nmOut = & llvm-nm -g $Monolith 2>$null | Select-String -Pattern ' [TD] _?__libcpp_verbose_abort'
-    if ($nmOut) {
-        $LibcxxMerged = $true
-        Write-Host "==> libc++ 已并入 v8_monolith.lib (libcxx_merged=true)"
+function Test-ArchiveDefinesSymbol {
+    param([string]$Archive, [string]$Symbol)
+    if (-not $Archive -or -not (Test-Path $Archive)) { return $false }
+    $nmCandidates = @(
+        (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\llvm-nm.exe")
+        (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\llvm-nm")
+    )
+    $nm = $null
+    foreach ($c in $nmCandidates) {
+        if (Test-Path $c) { $nm = $c; break }
     }
-} else {
-    $Dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
-    if ($Dumpbin) {
-        $dbOut = & dumpbin /SYMBOLS $Monolith 2>$null | Select-String -Pattern '__libcpp_verbose_abort'
-        if ($dbOut -and ($dbOut | Where-Object { $_ -notmatch '\bUNDEF\b' })) {
-            $LibcxxMerged = $true
-            Write-Host "==> libc++ 已并入 v8_monolith.lib (libcxx_merged=true, via dumpbin)"
+    if (-not $nm) {
+        $cmd = Get-Command llvm-nm -ErrorAction SilentlyContinue
+        if ($cmd) { $nm = $cmd.Source }
+    }
+    if ($nm) {
+        $hit = & $nm -g $Archive 2>$null | Select-String -Pattern " [TDRS] _?$Symbol"
+        return [bool]$hit
+    }
+    $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
+    if ($dumpbin) {
+        $lines = & dumpbin /SYMBOLS $Archive 2>$null | Select-String -Pattern $Symbol
+        if (-not $lines) { return $false }
+        return [bool]($lines | Where-Object { $_ -notmatch '\bUNDEF\b' })
+    }
+    return $false
+}
+
+function Test-IsThinLib {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $false }
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 8) { return $false }
+    $magic = [Text.Encoding]::ASCII.GetString($bytes, 0, 8)
+    return $magic -match 'thin'
+}
+
+function New-StaticLibFromObjs {
+    param(
+        [string]$OutLib,
+        [string[]]$ObjFiles
+    )
+    if (-not $ObjFiles -or $ObjFiles.Count -eq 0) { return $false }
+    $rsp = [IO.Path]::GetTempFileName()
+    try {
+        # 每行一个 obj，避免命令行过长
+        $ObjFiles | ForEach-Object { "`"$_`"" } | Set-Content -Path $rsp -Encoding ASCII
+
+        $candidates = @(
+            (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\lld-link.exe")
+            (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\lld-link")
+        )
+        $lld = $null
+        foreach ($c in $candidates) {
+            if (Test-Path $c) { $lld = $c; break }
         }
-    } else {
-        Write-Host "==> WARN: 无 llvm-nm/dumpbin，无法探测 libc++ 是否并入 monolith"
+        if (-not $lld) {
+            $cmd = Get-Command lld-link -ErrorAction SilentlyContinue
+            if ($cmd) { $lld = $cmd.Source }
+        }
+        if ($lld) {
+            & $lld /lib "/OUT:$OutLib" "@$rsp"
+            if ($LASTEXITCODE -ne 0) { return $false }
+            return (Test-Path $OutLib)
+        }
+        $libExe = Get-Command lib -ErrorAction SilentlyContinue
+        if ($libExe) {
+            & lib "/OUT:$OutLib" "@$rsp"
+            if ($LASTEXITCODE -ne 0) { return $false }
+            return (Test-Path $OutLib)
+        }
+        throw "未找到 lld-link 或 lib.exe，无法从 .obj 组 libc++.lib"
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $rsp
     }
 }
 
-# 方案 2: 未并入则附带独立 .lib
-if (-not $LibcxxMerged) {
-    Write-Host "==> libc++ 未并入 monolith，收集独立 .lib (libcxx_merged=false)"
-    $libDir = Join-Path $Prefix "lib"
-    $searchRoots = @(
-        (Join-Path $OutFull "obj\buildtools\third_party\libc++")
-        (Join-Path $OutFull "obj\buildtools\third_party\libc++abi")
-        (Join-Path $OutFull "obj\third_party\libc++")
-        (Join-Path $OutFull "obj\third_party\libc++abi")
-    )
-    $copied = 0
-    foreach ($root in $searchRoots) {
-        if (-not (Test-Path $root)) { continue }
-        Get-ChildItem -Path $root -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue | ForEach-Object {
-            $name = $_.Name
-            if ($name -match '^(libc\+\+|libc\+\+abi|libc\+\+experimental)') {
-                Copy-Item -Force $_.FullName (Join-Path $libDir $name)
-                Write-Host "    附带 $name"
-                $copied++
-            }
+function Find-LibcxxObjFiles {
+    param([string]$OutFull, [ValidateSet("libcxx","libcxxabi")][string]$Which)
+    $objRoot = Join-Path $OutFull "obj"
+    if (-not (Test-Path $objRoot)) { return @() }
+    # 不用 -Include（在部分 PowerShell 上不带尾随 * 会匹配不到）
+    Get-ChildItem -Path $objRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+        $ext = $_.Extension.ToLowerInvariant()
+        if ($ext -notin @('.obj', '.o')) { return $false }
+        $p = $_.FullName
+        if ($Which -eq "libcxx") {
+            if ($p -match 'libc\+\+abi') { return $false }
+            return ($p -match '[\\/]buildtools[\\/]third_party[\\/]libc\+\+[\\/]' `
+                -or $p -match '[\\/]third_party[\\/]libc\+\+[\\/]')
+        } else {
+            return ($p -match 'libc\+\+abi')
         }
+    } | ForEach-Object { $_.FullName }
+}
+
+# 探测 monolith 是否已并入 libc++（元数据）；始终仍产出 thick libc++.lib
+$LibcxxMerged = Test-ArchiveDefinesSymbol -Archive $Monolith -Symbol "__libcpp_verbose_abort"
+if ($LibcxxMerged) {
+    Write-Host "==> libc++ 符号已出现在 v8_monolith.lib (libcxx_merged=true)；仍附带独立 libc++.lib"
+} else {
+    Write-Host "==> libc++ 未并入 monolith (libcxx_merged=false)，组独立 libc++.lib"
+}
+
+$libDir = Join-Path $Prefix "lib"
+$destLib = Join-Path $libDir "libc++.lib"
+
+# 1) 若已有非 thin .lib，直接拷贝
+$existing = @()
+foreach ($root in @(
+    (Join-Path $OutFull "obj\buildtools\third_party\libc++")
+    (Join-Path $OutFull "obj\third_party\libc++")
+)) {
+    if (Test-Path $root) {
+        $existing += @(Get-ChildItem -Path $root -Recurse -Filter "libc++.lib" -File -ErrorAction SilentlyContinue)
     }
-    # 也接受 ninja 直接产出的 libc++.lib
-    foreach ($extra in @(
-        (Join-Path $OutFull "obj\buildtools\third_party\libc++\libc++.lib")
-        (Join-Path $OutFull "obj\buildtools\third_party\libc++abi\libc++abi.lib")
-    )) {
-        if (Test-Path $extra) {
-            Copy-Item -Force $extra (Join-Path $libDir (Split-Path -Leaf $extra))
-            Write-Host "    附带 $(Split-Path -Leaf $extra)"
-            $copied++
+}
+$copied = $false
+foreach ($e in $existing) {
+    if (Test-IsThinLib $e.FullName) {
+        Write-Host "    跳过 thin $($e.FullName)，改从 .obj 组库"
+        continue
+    }
+    Copy-Item -Force $e.FullName $destLib
+    Write-Host "    附带 thick libc++.lib (from $($e.FullName))"
+    $copied = $true
+    break
+}
+
+# 2) Windows source_set：从 .obj 组库（主路径）
+if (-not $copied) {
+    $objs = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxx)
+    if ($objs.Count -eq 0) {
+        throw "无法产出 libc++.lib：无现成库且未找到 libc++ .obj（source_set 产物）"
+    }
+    Write-Host "    从 $($objs.Count) 个 .obj 组 libc++.lib"
+    if (-not (New-StaticLibFromObjs -OutLib $destLib -ObjFiles $objs)) {
+        throw "从 .obj 创建 libc++.lib 失败"
+    }
+}
+
+if (Test-IsThinLib $destLib) {
+    throw "验收失败: libc++.lib 为 thin，不可发布"
+}
+if (-not (Test-ArchiveDefinesSymbol -Archive $destLib -Symbol "__libcpp_verbose_abort")) {
+    $abiObjs = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxxabi)
+    $abiLib = Join-Path $libDir "libc++abi.lib"
+    if ($abiObjs.Count -gt 0) {
+        Write-Host "    从 $($abiObjs.Count) 个 .obj 组 libc++abi.lib"
+        [void](New-StaticLibFromObjs -OutLib $abiLib -ObjFiles $abiObjs)
+    }
+    $inCxx = Test-ArchiveDefinesSymbol -Archive $destLib -Symbol "__libcpp_verbose_abort"
+    $inAbi = Test-ArchiveDefinesSymbol -Archive $abiLib -Symbol "__libcpp_verbose_abort"
+    if (-not $inCxx -and -not $inAbi) {
+        $hasNm = $false
+        foreach ($c in @(
+            (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\llvm-nm.exe")
+            (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\llvm-nm")
+        )) { if (Test-Path $c) { $hasNm = $true } }
+        if (Get-Command llvm-nm -ErrorAction SilentlyContinue) { $hasNm = $true }
+        if (-not $hasNm -and -not (Get-Command dumpbin -ErrorAction SilentlyContinue)) {
+            throw "验收失败: 无 llvm-nm/dumpbin，无法验证 libc++.lib 是否含 __libcpp_verbose_abort"
         }
+        throw "验收失败: libc++.lib 未定义 __libcpp_verbose_abort（下游无法链接）"
     }
-    if ($copied -eq 0) {
-        Write-Host "==> WARN: 未找到独立 libc++.lib；下游链接可能缺少 __libcpp_verbose_abort 等符号"
+    if ($inAbi -and -not $inCxx) {
+        Write-Host "    验收通过: __libcpp_verbose_abort 定义于 libc++abi.lib"
+    }
+} else {
+    Write-Host "    验收通过: libc++.lib 定义了 __libcpp_verbose_abort"
+}
+
+# 可选: 也组 libc++abi.lib（若有 obj 且尚未生成）
+$abiDest = Join-Path $libDir "libc++abi.lib"
+if (-not (Test-Path $abiDest)) {
+    $abiObjs2 = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxxabi)
+    if ($abiObjs2.Count -gt 0) {
+        Write-Host "    从 $($abiObjs2.Count) 个 .obj 组 libc++abi.lib"
+        [void](New-StaticLibFromObjs -OutLib $abiDest -ObjFiles $abiObjs2)
     }
 }
 
 if (-not (Test-Path (Join-Path $Prefix "libcxx\include\__config_site"))) {
     throw "验收失败: 缺少 libcxx/include/__config_site"
 }
+$monoOut = Join-Path $Prefix "lib\v8_monolith.lib"
+if (Test-IsThinLib $monoOut) { throw "验收失败: v8_monolith.lib 为 thin，不可发布" }
+$must = Join-Path $Prefix "lib\libc++.lib"
+if (-not (Test-Path $must)) { throw "验收失败: 缺少 lib/libc++.lib" }
+if (Test-IsThinLib $must) { throw "验收失败: lib/libc++.lib 为 thin，不可发布" }
 
 # --- 6) 打包为 zip -----------------------------------------------------------
 $Dist    = Join-Path $LibRoot "dist"
@@ -339,7 +467,7 @@ cppgc_caged : $EnableCppgcCaged
 cppgc_caged_comment : false=关 caged heap/young gen/cppgc 指针压缩，下游勿定义 CPPGC_* 宏；true=恢复 V8 默认，下游须定义 CPPGC_POINTER_COMPRESSION
 custom_libcxx : true
 libcxx_merged : $LibcxxMergedStr
-libcxx_comment : 下游必须用包内 libcxx/include (+ libcxxabi/include) 编译；ABI 命名空间 std::__Cr。libcxx_merged=true 时只链 v8_monolith.lib；false 时另链 lib/libc++.lib
+libcxx_comment : 下游必须用包内 libcxx/include (+ libcxxabi/include) 编译；ABI=std::__Cr。务必另链 thick lib/libc++.lib（Windows 由 source_set .obj 组库）
 Linkage     : static (v8_monolith)
 Built (UTC) : $((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss"))
 Built by    : GitHub Actions (build-static-libs)
@@ -367,7 +495,8 @@ Chromium custom libc++ (use_custom_libcxx=true)
 
 链接:
   ${V8_ROOT}/lib/v8_monolith.lib
-  # 若 BUILD_INFO 中 libcxx_merged=false，再加 lib/libc++.lib (及 libc++abi.lib)
+  ${V8_ROOT}/lib/libc++.lib            # 必须：thick（由 source_set .obj 组库）
+  ${V8_ROOT}/lib/libc++abi.lib         # 若包内存在
 
 验收提示:
   - demangle NewDefaultPlatform 应含 __Cr

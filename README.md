@@ -267,7 +267,7 @@ Chromium libc++ ABI 命名空间 `std::__Cr`。产物包内附带：
 | `libcxx/include/` | Chromium libc++ 头文件 + `__config_site`（定义 ABI） |
 | `libcxxabi/include/` | libc++abi 头文件（若存在） |
 | `lib/libv8_monolith.a` / `v8_monolith.lib` | V8 静态库 |
-| `lib/libc++.a` / `libc++.lib` | 仅当 `BUILD_INFO` 中 `libcxx_merged=false` 时附带 |
+| `lib/libc++.a` / `libc++.lib` | **thick** 静态库（始终附带；thin 不可发布） |
 | `LIBCXX_USAGE.txt` | 下游编译/链接示例 |
 
 ```cmake
@@ -277,9 +277,12 @@ target_include_directories(your_target SYSTEM PRIVATE
 )
 target_include_directories(your_target PRIVATE ${V8_ROOT}/include)
 # 另需 -nostdinc++（或等价），禁止混入系统 STL
-target_link_libraries(your_target PRIVATE ${V8_ROOT}/lib/libv8_monolith.a)
-# Windows MSVC: ${V8_ROOT}/lib/v8_monolith.lib
-# 若 libcxx_merged=false，再链接 lib/libc++.a（或 .lib）
+target_link_libraries(your_target PRIVATE
+  ${V8_ROOT}/lib/libv8_monolith.a
+  ${V8_ROOT}/lib/libc++.a
+  # ${V8_ROOT}/lib/libc++abi.a   # 若包内存在
+)
+# Windows MSVC: v8_monolith.lib + libc++.lib
 ```
 
 嵌入示例见 [V8 官方 embed 文档](https://v8.dev/docs/embed)。注意下游的编译期宏须与各平台产物

@@ -78,6 +78,21 @@ fi
 [ -f "${STAGE}/lib/libv8_monolith.a" ] || die "打包缺少 libv8_monolith.a"
 [ -f "${STAGE}/libcxx/include/__config_site" ] || die "打包缺少 libcxx/include/__config_site"
 
+# thin archive 不可发布；custom libc++ 包必须带 thick libc++.a
+is_thin_a() {
+  local f="$1"
+  [ -f "${f}" ] || return 1
+  local magic
+  magic="$(head -c 8 "${f}" 2>/dev/null | tr -d '\0' || true)"
+  case "${magic}" in *thin*) return 0 ;; *) return 1 ;; esac
+}
+is_thin_a "${STAGE}/lib/libv8_monolith.a" && die "拒绝发布 thin libv8_monolith.a（主库成员 .o 不在包内）"
+[ -f "${STAGE}/lib/libc++.a" ] || die "打包缺少 thick lib/libc++.a (libcxx_merged=${LIBCXX_MERGED})"
+is_thin_a "${STAGE}/lib/libc++.a" && die "拒绝发布 thin libc++.a（需 thick）"
+if [ -f "${STAGE}/lib/libc++abi.a" ]; then
+  is_thin_a "${STAGE}/lib/libc++abi.a" && die "拒绝发布 thin libc++abi.a（需 thick）"
+fi
+
 # 许可证
 copy_license "${V8_SRC}" "${STAGE}" "v8"
 for lic in \
@@ -130,7 +145,7 @@ BUILD_INFO_ARGS=(
   "cppgc_caged_comment : false=关 caged heap/young gen/cppgc 指针压缩，下游勿定义 CPPGC_* 宏；true=恢复 V8 默认，下游须定义 CPPGC_POINTER_COMPRESSION"
   "custom_libcxx : ${CUSTOM_LIBCXX}"
   "libcxx_merged : ${LIBCXX_MERGED}"
-  "libcxx_comment : 下游必须用包内 libcxx/include (+ libcxxabi/include) 编译；ABI 命名空间 std::__Cr。libcxx_merged=true 时只链 libv8_monolith；false 时另链 lib/libc++.a"
+  "libcxx_comment : 下游必须用包内 libcxx/include (+ libcxxabi/include) 编译；ABI=std::__Cr。务必另链 thick lib/libc++.a（及 libc++abi.a 若存在）；禁止 thin archive"
 )
 
 case "${TARGET}" in
@@ -163,9 +178,8 @@ libstdc++ / 系统 libc++ (std::__1)。
 
 链接:
   ${V8_ROOT}/lib/libv8_monolith.a
-  # 若 BUILD_INFO 中 libcxx_merged=false，再加:
-  # ${V8_ROOT}/lib/libc++.a
-  # ${V8_ROOT}/lib/libc++abi.a   # 若存在
+  ${V8_ROOT}/lib/libc++.a              # 必须：thick，禁止 !<thin>
+  ${V8_ROOT}/lib/libc++abi.a           # 若包内存在
 
 验收提示:
   - nm/llvm-nm 对 NewDefaultPlatform  demangle 应含 __Cr
