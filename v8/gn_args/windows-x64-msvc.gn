@@ -6,3 +6,11 @@ v8_target_cpu = "x64"
 
 # 使用 clang-cl (Chromium 默认)，产出 MSVC ABI 的 v8_monolith.lib。
 is_clang = true
+
+# --- STL: Chromium 自带 libc++ (std::__Cr) ------------------------------------
+#
+# clang-cl 下 use_custom_libcxx=true 是 Chromium 主路径。V8 公开 API 中的
+# std::unique_ptr 等会编成 std::__Cr::；下游必须用本包附带的 libc++ 头文件
+# (libcxx/include + __config_site) 编译，并链接同一 ABI，否则 NewDefaultPlatform
+# 等符号无法解析。
+use_custom_libcxx = true

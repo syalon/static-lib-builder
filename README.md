@@ -198,7 +198,8 @@ export FFMPEG_DIR=/path/to/ffmpeg-minimal-7.1-windows-x64-msvc
 # V8
 
 用 GN + Ninja + depot_tools 从源码编译 V8，产出 **monolith 静态库**（`libv8_monolith.a` /
-Windows `v8_monolith.lib`）。
+Windows `v8_monolith.lib`），并以 `use_custom_libcxx=true` 附带 Chromium libc++ 头文件与 ABI
+（`libcxx/`、`libcxxabi/`，见下方「下游链接」）。
 
 ## 支持平台 / 架构
 
@@ -257,23 +258,41 @@ pwsh v8/scripts/build_windows.ps1 -Target windows-x64-msvc
 
 ## 下游链接
 
+本仓库全平台均以 `use_custom_libcxx=true` 构建：V8 公开 API 中的 `std::` 类型使用
+Chromium libc++ ABI 命名空间 `std::__Cr`。产物包内附带：
+
+| 路径 | 说明 |
+|------|------|
+| `include/` | V8 公开头文件 |
+| `libcxx/include/` | Chromium libc++ 头文件 + `__config_site`（定义 ABI） |
+| `libcxxabi/include/` | libc++abi 头文件（若存在） |
+| `lib/libv8_monolith.a` / `v8_monolith.lib` | V8 静态库 |
+| `lib/libc++.a` / `libc++.lib` | 仅当 `BUILD_INFO` 中 `libcxx_merged=false` 时附带 |
+| `LIBCXX_USAGE.txt` | 下游编译/链接示例 |
+
 ```cmake
+target_include_directories(your_target SYSTEM PRIVATE
+  ${V8_ROOT}/libcxx/include
+  ${V8_ROOT}/libcxxabi/include   # 若存在
+)
 target_include_directories(your_target PRIVATE ${V8_ROOT}/include)
+# 另需 -nostdinc++（或等价），禁止混入系统 STL
 target_link_libraries(your_target PRIVATE ${V8_ROOT}/lib/libv8_monolith.a)
 # Windows MSVC: ${V8_ROOT}/lib/v8_monolith.lib
+# 若 libcxx_merged=false，再链接 lib/libc++.a（或 .lib）
 ```
 
 嵌入示例见 [V8 官方 embed 文档](https://v8.dev/docs/embed)。注意下游的编译期宏须与各平台产物
 `BUILD_INFO.txt` 中的 `ptr_compr` / `cppgc_caged` 一致。
 
-> **macOS**：`use_custom_libcxx=false`，使用 Xcode SDK libc++ (`std::__1`)，与下游 shim 一致；
-> 通过关闭 `use_allocator_shim` / `use_partition_alloc_as_malloc` 避免与 SDK libc++ 的
-> `operator new/delete` 可见性冲突。
+> **全平台**：`use_custom_libcxx=true`，ABI 为 `std::__Cr`。下游不可混用系统 libstdc++ /
+> SDK libc++ (`std::__1`) / MSVC STL，否则 `NewDefaultPlatform` 等符号无法解析。
 >
-> **Linux**：`use_sysroot=false` + `use_custom_libcxx=false`，在 CI 宿主机上用系统 libstdc++
-> 编译，与下游一致。产物依赖较新 glibc（ubuntu 22.04/24.04 级别），老发行版可能无法运行。
+> **macOS**：关闭 `use_allocator_shim` / `use_partition_alloc_as_malloc`（独立 embedder
+> 不需要 PartitionAlloc-as-malloc）。
 >
-> 两平台下游均只需链接 `libv8_monolith.a`（及常规系统库）。
+> **Linux**：`use_sysroot=false`，在 CI 宿主机上编译；STL 用树内 libc++。产物可能依赖较新
+> glibc（ubuntu 22.04/24.04 级别）。
 
 ## 实现说明
 

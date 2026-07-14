@@ -5,16 +5,13 @@ target_os = "mac"
 target_cpu = "arm64"
 v8_target_cpu = "arm64"
 
-# --- STL 与分配器 (与下游系统 libc++ 对齐) -----------------------------------
+# --- STL 与分配器 (Chromium 自带 libc++ / std::__Cr) ---------------------------
 #
-# 独立 embedder 应使用 Xcode SDK 自带 libc++ (std::__1)，与下游 shim / 宿主代码一致。
-# 若用 Chromium 自带 libc++ (use_custom_libcxx=true)，V8 公开 API 中的 std::unique_ptr 等
-# 会编成 std::__Cr::，下游用系统 libc++ 链接时会出现 NewDefaultPlatform 等 undefined symbol。
+# 使用 Chromium 自带 libc++，V8 公开 API 中的 std:: 类型编成 std::__Cr::。
+# 下游必须用本包附带的 libcxx/include（含 __config_site）编译并链接同一 ABI。
 #
-# 直接设 use_custom_libcxx=false 会与默认 allocator shim 冲突：shim 通过
-# -fvisibility-global-new-delete=force-hidden 隐藏 operator new/delete，而 SDK libc++
-# 的 <new> 声明为 default 可见性，导致编译失败。独立 V8 不需要 Chrome 的
-# PartitionAlloc-as-malloc，关闭 shim 即可解除该冲突。
+# 关闭 allocator shim + PA-as-malloc：独立 embedder 不需要 Chrome 的
+# PartitionAlloc-as-malloc，避免替换全局 operator new/delete。
 use_allocator_shim = false
 use_partition_alloc_as_malloc = false
-use_custom_libcxx = false
+use_custom_libcxx = true

@@ -5,10 +5,7 @@ target_os = "mac"
 target_cpu = "x64"
 v8_target_cpu = "x64"
 
-# --- STL 与分配器 (与下游系统 libc++ 对齐，原因同 macos-arm64.gn) ------------
-#
-# 关闭 allocator shim + PA-as-malloc，避免 force-hidden new/delete 与 SDK libc++ 冲突；
-# 使用系统 libc++ (std::__1)，使下游链接 V8 公开 API 时 mangling 一致。
+# --- STL 与分配器 (Chromium 自带 libc++ / std::__Cr，原因同 macos-arm64.gn) ----
 use_allocator_shim = false
 use_partition_alloc_as_malloc = false
-use_custom_libcxx = false
+use_custom_libcxx = true

@@ -7,5 +7,6 @@ target_os = "android"
 target_cpu = "arm64"
 v8_target_cpu = "arm64"
 
-# 使用 NDK 自带 libc++。
-use_custom_libcxx = false
+# 使用 Chromium 自带 libc++ (std::__Cr)，不依赖 NDK STL。
+# 下游须用本包附带的 libcxx 头文件编译并链接同一 ABI。
+use_custom_libcxx = true

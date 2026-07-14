@@ -5,17 +5,12 @@ target_os = "linux"
 target_cpu = "x64"
 v8_target_cpu = "x64"
 
-# --- sysroot 与 STL (与下游系统 libstdc++ 对齐) --------------------------------
+# --- sysroot 与 STL (Chromium 自带 libc++ / std::__Cr) -------------------------
 #
-# 不用 Chromium 自带的 debian_bullseye sysroot，改在 CI 宿主机 (ubuntu-latest) 上
-# 用系统 libstdc++ (gcc 11/13) 编译。bullseye sysroot 的 libstdc++ 10 缺 C++20 的
-# std::bit_cast，无法配合 use_custom_libcxx=false。
+# 不用 Chromium 自带 debian sysroot，改在 CI 宿主机上编译；STL 改用树内
+# libc++ (use_custom_libcxx=true)。下游必须用本包附带的 libcxx 头文件与同一
+# ABI (std::__Cr)，不可再混链系统 libstdc++ / 系统 libc++。
 #
-# 代价：产物依赖较新 glibc (ubuntu 22.04/24.04 级别)，老发行版可能无法运行；
-# 对桌面 / 游戏场景通常可接受。
+# 代价：产物仍可能依赖较新 glibc (ubuntu 22.04/24.04 级别)。
 use_sysroot = false
-
-# 使用系统 libstdc++，与下游 shim / 宿主代码一致。
-# 若用 Chromium 自带 libc++ (use_custom_libcxx=true)，V8 公开 API 中的 std:: 类型
-# 会编成 std::__Cr::，下游用 libstdc++ 链接时会出现 NewDefaultPlatform 等 undefined symbol。
-use_custom_libcxx = false
+use_custom_libcxx = true

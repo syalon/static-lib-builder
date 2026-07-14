@@ -14,9 +14,10 @@
 # 前置: 已运行 v8/scripts/fetch.sh <target> 拉好源码。
 #
 # 流程: 由 gn_args/<target>.gn 基础参数 + config.env 可调参数合成 args.gn
-#       -> gn gen -> ninja v8_monolith -> 收集到 out/<target>/{include,lib}
+#       -> gn gen -> ninja v8_monolith
+#       -> 收集到 out/<target>/{include,lib,libcxx,libcxxabi}
 #
-# 产物: v8/out/<target>/{include, lib/libv8_monolith.a}
+# 产物: v8/out/<target>/{include, lib/libv8_monolith.a, libcxx/, libcxxabi/}
 # =============================================================================
 set -euo pipefail
 
@@ -27,6 +28,8 @@ LIB_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${LIB_ROOT}/.." && pwd)"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/common.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/collect_libcxx.sh"
 
 # 所有配置以 config.env 为唯一来源。
 load_env "${LIB_ROOT}/config.env"
@@ -93,9 +96,8 @@ mkdir -p "${V8_SRC}/${OUT_DIR}"
   echo "is_component_build = false"
   echo "v8_use_external_startup_data = false"
   echo "treat_warnings_as_errors = false"
-  # 我们用系统/工具链 libc++ (use_custom_libcxx=false)，而 V8 sandbox 需要 libc++ 加固
-  # (use_safe_libcxx，仅随 custom libcxx 提供)，两者冲突。嵌入场景关闭 sandbox。
-  # 指针压缩与 sandbox 相互独立，关 sandbox 不影响 v8_enable_pointer_compression。
+  # 已启用 use_custom_libcxx=true（见 gn_args），sandbox 所需的 libc++ 加固可用；
+  # 但仍为嵌入场景关闭 sandbox。指针压缩与 sandbox 相互独立。
   echo "v8_enable_sandbox = false"
   # cppgc (Oilpan / C++ 堆) 的 caged heap 开关，由 config.env V8_ENABLE_CPPGC_CAGED_HEAP 控制。
   # 背景: 64bit (arm64/x64) 上默认开，BUILD.gn 会据此"强制" cppgc_enable_pointer_compression
@@ -163,5 +165,13 @@ mkdir -p "${PREFIX}/lib" "${PREFIX}/include"
 cp "${MONOLITH}" "${PREFIX}/lib/libv8_monolith.a"
 cp -R "${V8_SRC}/include/." "${PREFIX}/include/"
 
+# Chromium custom libc++ / libc++abi（下游必须用这些头与 ABI，见 BUILD_INFO）
+collect_libcxx "${V8_SRC}" "${OUT_DIR}" "${PREFIX}"
+# 写入供 package.sh 读取的元数据
+{
+  echo "custom_libcxx=true"
+  echo "libcxx_merged=${LIBCXX_MERGED}"
+} > "${PREFIX}/LIBCXX_META.txt"
+
 log "完成: 产物位于 ${PREFIX}"
-ls -lhR "${PREFIX}" | head -n 40 || true
+ls -lhR "${PREFIX}" | head -n 60 || true
