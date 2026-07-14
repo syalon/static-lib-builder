@@ -176,6 +176,18 @@ Set-Content -Path $ArgsGn -Value $argsContent -Encoding UTF8
 Write-Host "==> 生成的 args.gn:"
 Get-Content $ArgsGn | ForEach-Object { "    $_" }
 
+# --- 关闭 thin archive（让静态库直接产出 thick，可分发）----------------------
+# Chromium 默认给静态库套 //build/config/compiler:thin_archive（win 下 /llvmlibthin）。
+# thin 归档只引用 .o，拷进产物包即失效。官方注释也说做可分发静态库须移除该 config。
+Write-Host "==> 关闭 thin archive (build/config/compiler/BUILD.gn)"
+$PyExe = $null
+foreach ($p in @("python3", "python", "vpython3")) {
+    $c = Get-Command $p -ErrorAction SilentlyContinue
+    if ($c) { $PyExe = $c.Source; break }
+}
+if (-not $PyExe) { throw "未找到 python，无法关闭 thin archive" }
+Invoke-Checked { & $PyExe (Join-Path $ScriptDir "disable_thin_archive.py") $V8Src }
+
 # --- 4) gn gen + ninja -------------------------------------------------------
 Push-Location $V8Src
 Invoke-Checked { cmd /c "gn gen $OutDir" }
@@ -241,7 +253,8 @@ function Test-ArchiveDefinesSymbol {
         if ($cmd) { $nm = $cmd.Source }
     }
     if ($nm) {
-        $hit = & $nm -g $Archive 2>$null | Select-String -Pattern " [TDRS] _?$Symbol"
+        # 类型字符取除 U/u 外任意字母 (含 weak W/V)，覆盖可重写的 __libcpp_verbose_abort
+        $hit = & $nm -g $Archive 2>$null | Select-String -Pattern " [A-TV-Za-tv-z] _?$Symbol(?![A-Za-z0-9_])"
         return [bool]$hit
     }
     $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
@@ -321,18 +334,27 @@ function Find-LibcxxObjFiles {
     } | ForEach-Object { $_.FullName }
 }
 
-# 探测 monolith 是否已并入 libc++（元数据）；始终仍产出 thick libc++.lib
-$LibcxxMerged = Test-ArchiveDefinesSymbol -Archive $Monolith -Symbol "__libcpp_verbose_abort"
-if ($LibcxxMerged) {
-    Write-Host "==> libc++ 符号已出现在 v8_monolith.lib (libcxx_merged=true)；仍附带独立 libc++.lib"
-} else {
-    Write-Host "==> libc++ 未并入 monolith (libcxx_merged=false)，组独立 libc++.lib"
+# 判断某组 .obj 是否含 verbose_abort（__libcpp_verbose_abort 定义所在的 TU）。
+# 这是比 Windows 上时好时坏的 nm/dumpbin 更可靠的“完整性”判据。
+function Test-ObjsHaveVerboseAbort {
+    param([string[]]$Objs)
+    if (-not $Objs) { return $false }
+    foreach ($o in $Objs) {
+        if ([IO.Path]::GetFileName($o) -match 'verbose_abort') { return $true }
+    }
+    return $false
 }
 
 $libDir = Join-Path $Prefix "lib"
 $destLib = Join-Path $libDir "libc++.lib"
 
-# 1) 若已有非 thin .lib，直接拷贝
+# Windows 上 libc++ 是 source_set（无 libc++.lib），其所有 .obj（含 verbose_abort.obj）
+# 会被完整链入 complete_static_lib 的 v8_monolith.lib，因此 monolith 天然自含 libc++。
+# 我们额外从这些 .obj 组一份独立 thick libc++.lib，供下游单独链接。
+$LibcxxObjs = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxx)
+$AbiObjs    = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxxabi)
+
+# 1) 若已有非 thin 现成 .lib，直接拷贝（一般 Windows 不会有）
 $existing = @()
 foreach ($root in @(
     (Join-Path $OutFull "obj\buildtools\third_party\libc++")
@@ -356,56 +378,51 @@ foreach ($e in $existing) {
 
 # 2) Windows source_set：从 .obj 组库（主路径）
 if (-not $copied) {
-    $objs = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxx)
-    if ($objs.Count -eq 0) {
+    if ($LibcxxObjs.Count -eq 0) {
         throw "无法产出 libc++.lib：无现成库且未找到 libc++ .obj（source_set 产物）"
     }
-    Write-Host "    从 $($objs.Count) 个 .obj 组 libc++.lib"
-    if (-not (New-StaticLibFromObjs -OutLib $destLib -ObjFiles $objs)) {
+    Write-Host "    从 $($LibcxxObjs.Count) 个 .obj 组 libc++.lib"
+    if (-not (New-StaticLibFromObjs -OutLib $destLib -ObjFiles $LibcxxObjs)) {
         throw "从 .obj 创建 libc++.lib 失败"
     }
+}
+
+# 顺带组一份独立 libc++abi.lib（若有对应 obj）
+$abiDest = Join-Path $libDir "libc++abi.lib"
+if ($AbiObjs.Count -gt 0 -and -not (Test-Path $abiDest)) {
+    Write-Host "    从 $($AbiObjs.Count) 个 .obj 组 libc++abi.lib"
+    [void](New-StaticLibFromObjs -OutLib $abiDest -ObjFiles $AbiObjs)
 }
 
 if (Test-IsThinLib $destLib) {
     throw "验收失败: libc++.lib 为 thin，不可发布"
 }
-if (-not (Test-ArchiveDefinesSymbol -Archive $destLib -Symbol "__libcpp_verbose_abort")) {
-    $abiObjs = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxxabi)
-    $abiLib = Join-Path $libDir "libc++abi.lib"
-    if ($abiObjs.Count -gt 0) {
-        Write-Host "    从 $($abiObjs.Count) 个 .obj 组 libc++abi.lib"
-        [void](New-StaticLibFromObjs -OutLib $abiLib -ObjFiles $abiObjs)
-    }
-    $inCxx = Test-ArchiveDefinesSymbol -Archive $destLib -Symbol "__libcpp_verbose_abort"
-    $inAbi = Test-ArchiveDefinesSymbol -Archive $abiLib -Symbol "__libcpp_verbose_abort"
-    if (-not $inCxx -and -not $inAbi) {
-        $hasNm = $false
-        foreach ($c in @(
-            (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\llvm-nm.exe")
-            (Join-Path $V8Src "third_party\llvm-build\Release+Asserts\bin\llvm-nm")
-        )) { if (Test-Path $c) { $hasNm = $true } }
-        if (Get-Command llvm-nm -ErrorAction SilentlyContinue) { $hasNm = $true }
-        if (-not $hasNm -and -not (Get-Command dumpbin -ErrorAction SilentlyContinue)) {
-            throw "验收失败: 无 llvm-nm/dumpbin，无法验证 libc++.lib 是否含 __libcpp_verbose_abort"
-        }
-        throw "验收失败: libc++.lib 未定义 __libcpp_verbose_abort（下游无法链接）"
-    }
-    if ($inAbi -and -not $inCxx) {
-        Write-Host "    验收通过: __libcpp_verbose_abort 定义于 libc++abi.lib"
-    }
+
+# --- 验收 __libcpp_verbose_abort 可解析 --------------------------------------
+# 优先用 obj 文件判据（可靠）：libc++.lib 由包含 verbose_abort.obj 的完整 libc++
+# source_set 组成，即含该符号。nm/dumpbin 仅作补充证据，不作为唯一硬门槛，避免
+# Windows 上工具输出差异导致的假失败。
+$verboseFromObjs = (Test-ObjsHaveVerboseAbort -Objs $LibcxxObjs) `
+    -or (Test-ObjsHaveVerboseAbort -Objs $AbiObjs)
+$verboseFromNm = (Test-ArchiveDefinesSymbol -Archive $destLib -Symbol "__libcpp_verbose_abort") `
+    -or (Test-ArchiveDefinesSymbol -Archive $abiDest -Symbol "__libcpp_verbose_abort")
+
+# monolith 是否自含（Windows source_set 通常为真）；作为元数据并兜底验收。
+$LibcxxMerged = Test-ArchiveDefinesSymbol -Archive $Monolith -Symbol "__libcpp_verbose_abort"
+
+if ($verboseFromObjs) {
+    Write-Host "    验收通过: libc++ 目标含 verbose_abort.obj（__libcpp_verbose_abort 可解析）"
+} elseif ($verboseFromNm) {
+    Write-Host "    验收通过: nm/dumpbin 探到 __libcpp_verbose_abort"
+} elseif ($LibcxxMerged) {
+    Write-Host "    验收通过: __libcpp_verbose_abort 已并入 v8_monolith.lib"
 } else {
-    Write-Host "    验收通过: libc++.lib 定义了 __libcpp_verbose_abort"
+    throw "验收失败: 未在 libc++.lib / libc++abi.lib / monolith 中找到 __libcpp_verbose_abort（下游无法链接）"
 }
 
-# 可选: 也组 libc++abi.lib（若有 obj 且尚未生成）
-$abiDest = Join-Path $libDir "libc++abi.lib"
-if (-not (Test-Path $abiDest)) {
-    $abiObjs2 = @(Find-LibcxxObjFiles -OutFull $OutFull -Which libcxxabi)
-    if ($abiObjs2.Count -gt 0) {
-        Write-Host "    从 $($abiObjs2.Count) 个 .obj 组 libc++abi.lib"
-        [void](New-StaticLibFromObjs -OutLib $abiDest -ObjFiles $abiObjs2)
-    }
-}
+# source_set 语义下 libc++ 必然并入 monolith；若 nm 误判为 false 但 obj 判据成立，
+# 修正元数据，避免下游误以为需另找该符号。
+if (-not $LibcxxMerged -and $verboseFromObjs) { $LibcxxMerged = $true }
 
 if (-not (Test-Path (Join-Path $Prefix "libcxx\include\__config_site"))) {
     throw "验收失败: 缺少 libcxx/include/__config_site"

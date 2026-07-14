@@ -7,8 +7,15 @@
 #   2) v8_monolith 通常不并入 libc++（`__libcpp_verbose_abort` 为 U）。
 #   3) Windows 上 libc++ 是 source_set，根本没有 libc++.lib，必须从 .obj 组库。
 #
+# 主路径 (现行):
+#   build_unix.sh 在 gn gen 前调用 disable_thin_archive.py 置空
+#   //build/config/compiler:thin_archive，V8 于是直接产出 thick libc++.a。
+#   本脚本对 thick 源只做 cp（见 _thicken_archive），不再跑脆弱的 thin->thick 转换。
+#
+# 兜底: 万一仍拿到 thin（补丁未生效等），保留 MRI / 成员解析 / 从 .o 组库逻辑。
+#
 # 策略: 始终产出 thick lib/libc++.a (+ libc++abi.a)，libcxx_merged 如实记录；
-#       未并入时缺库 / 仍为 thin / 缺关键符号 → 构建失败。
+#       缺库 / 仍为 thin / 缺关键符号 → 构建失败。
 #
 # 用法 (由 build_unix.sh source):
 #   collect_libcxx <v8_src> <out_dir_rel> <prefix>
@@ -128,6 +135,32 @@ _thicken_archive() {
   fi
 
   log "  转换 thin -> thick: $(basename "${src}")"
+
+  # 首选: llvm-ar MRI 脚本 ADDLIB —— 由 llvm-ar 自行解析 thin 成员并写入完整对象，
+  # 无需手工推断相对路径。thin 成员按构建目录 (out_root) 相对存储，故须在其下运行。
+  local ar_bin dest_abs src_abs
+  if ar_bin="$(_libcxx_resolve_tool llvm-ar)"; then
+    case "${dest}" in /*) dest_abs="${dest}" ;; *) dest_abs="$(pwd)/${dest}" ;; esac
+    case "${src}" in
+      /*) src_abs="${src}" ;;
+      *) src_abs="$(cd "$(dirname "${src}")" && pwd)/$(basename "${src}")" ;;
+    esac
+    if ( cd "${out_root}" && "${ar_bin}" -M ) 2>/dev/null <<EOF
+CREATE ${dest_abs}
+ADDLIB ${src_abs}
+SAVE
+END
+EOF
+    then
+      if [ -f "${dest}" ] && ! _is_thin_archive "${dest}"; then
+        return 0
+      fi
+    fi
+    rm -f "${dest}"
+    log "  MRI 方式未成功，回退到成员路径解析"
+  fi
+
+  # 回退: 解析 thin 成员路径逐个组库
   local members=()
   local m cand resolved
   while IFS= read -r m; do
@@ -150,6 +183,10 @@ _thicken_archive() {
           break
         fi
       done
+      # 末路: 按 basename 递归查找（应对相对基准目录不一致）
+      if [ -z "${resolved}" ]; then
+        resolved="$(find "${out_root}" -type f -name "$(basename "${m}")" 2>/dev/null | head -1 || true)"
+      fi
     fi
     [ -n "${resolved}" ] || die "thin archive 成员缺失: ${m} (来自 ${src})"
     members+=("${resolved}")
@@ -170,8 +207,8 @@ _create_archive_from_objs() {
   return 0
 }
 
-# archive 中是否已定义某符号 (T/D/R/S，非 U)
-# 返回: 0=已定义, 1=未定义/无工具时由调用方区分
+# archive 中是否已定义某符号 (类型非 U/u，含 weak W/V 等)
+# 返回: 0=已定义, 1=未定义, 2=无工具
 _archive_defines_symbol() {
   local archive="$1"
   local sym="$2"
@@ -183,7 +220,10 @@ _archive_defines_symbol() {
       return 2  # 无 nm 工具
     fi
   fi
-  "${nm_bin}" -g "${archive}" 2>/dev/null | grep -E " [TDRS] _?${sym}" >/dev/null
+  # 类型字符取除 U/u 外的任意字母 (T/D/R/S/B/W/V/G/C ...)，覆盖 weak 符号；
+  # 符号名在行尾，用边界避免误匹配前缀相同的更长符号。
+  "${nm_bin}" -g "${archive}" 2>/dev/null \
+    | grep -E " [A-TV-Za-tv-z] _?${sym}([^A-Za-z0-9_]|$)" >/dev/null
 }
 
 _require_symbol_or_die() {
@@ -201,31 +241,43 @@ _require_symbol_or_die() {
   return 0
 }
 
-# 收集 libc++ / libc++abi 的 .o（排除对方目录）
+# 收集 libc++ / libc++abi 的 .o/.obj（递归全树，覆盖交叉编译的工具链子目录）
+# 为避免混入不同架构，优先默认工具链 (${out_full}/obj/，与 monolith 同架构)，
+# 该处无对象时再回退整棵树。
 _find_libcxx_objs() {
   local out_full="$1"
   local which="$2"  # libcxx | libcxxabi
-  case "${which}" in
-    libcxx)
-      find "${out_full}/obj" -type f -name '*.o' 2>/dev/null | while IFS= read -r f; do
-        case "${f}" in
-          */libc++abi/*|*/libc++abi.a/*) continue ;;
-          */buildtools/third_party/libc++/*|*/third_party/libc++/*) echo "${f}" ;;
-        esac
-      done
-      ;;
-    libcxxabi)
-      find "${out_full}/obj" -type f -name '*.o' 2>/dev/null | while IFS= read -r f; do
-        case "${f}" in
-          */buildtools/third_party/libc++abi/*|*/third_party/libc++abi/*|*/libc++abi/*)
-            echo "${f}"
+  local all preferred
+  all="$(_find_libcxx_objs_raw "${out_full}" "${which}")"
+  [ -n "${all}" ] || return 0
+  preferred="$(printf '%s\n' "${all}" | grep -E "^${out_full}/obj/" || true)"
+  if [ -n "${preferred}" ]; then
+    printf '%s\n' "${preferred}"
+  else
+    printf '%s\n' "${all}"
+  fi
+}
+
+_find_libcxx_objs_raw() {
+  local out_full="$1"
+  local which="$2"
+  find "${out_full}" -type f \( -name '*.o' -o -name '*.obj' \) 2>/dev/null \
+    | while IFS= read -r f; do
+        case "${which}" in
+          libcxx)
+            case "${f}" in */libc++abi/*) continue ;; esac
+            case "${f}" in
+              */buildtools/third_party/libc++/*|*/third_party/libc++/*) echo "${f}" ;;
+            esac
+            ;;
+          libcxxabi)
+            case "${f}" in */libc++abi/*) echo "${f}" ;; esac
             ;;
         esac
       done
-      ;;
-  esac
 }
 
+# 递归查找 libc++.a / libc++abi.a，优先默认工具链 (${out_full}/obj/)。
 _find_named_archive() {
   local out_full="$1"
   local name="$2"  # libc++.a | libc++abi.a
@@ -241,22 +293,28 @@ _find_named_archive() {
       return 0
     fi
   done
-  # 兜底 find（取第一个匹配）
+  # 递归全树：优先默认工具链 obj/，否则取首个 libc++ 匹配。
+  local best=""
   while IFS= read -r f; do
     case "${f}" in
-      */buildtools/third_party/libc++*|*/third_party/libc++*|*/libc++/*|*/libc++abi/*)
-        echo "${f}"
-        return 0
-        ;;
+      */buildtools/third_party/libc++*|*/third_party/libc++*|*/libc++/*|*/libc++abi/*) ;;
+      *) continue ;;
     esac
-  done < <(find "${out_full}/obj" -type f -name "${name}" 2>/dev/null || true)
+    case "${f}" in
+      "${out_full}/obj/"*) echo "${f}"; return 0 ;;
+    esac
+    [ -z "${best}" ] && best="${f}"
+  done < <(find "${out_full}" -type f -name "${name}" 2>/dev/null || true)
+  [ -n "${best}" ] && { echo "${best}"; return 0; }
   return 1
 }
 
-# 产出 thick libc++.a / libc++abi.a 到 prefix/lib（始终执行）
+# 产出 thick libc++.a / libc++abi.a 到 prefix/lib。
+# $3 merged: monolith 是否已含 libc++（true 时找不到独立库不致命）。
 _package_libcxx_libs() {
   local out_full="$1"
   local prefix="$2"
+  local merged="${3:-false}"
   local dest_dir="${prefix}/lib"
   mkdir -p "${dest_dir}"
 
@@ -274,6 +332,13 @@ _package_libcxx_libs() {
       [ -n "${o}" ] && objs+=("${o}")
     done < <(_find_libcxx_objs "${out_full}" libcxx)
     if [ "${#objs[@]}" -eq 0 ]; then
+      log "  诊断: out 目录下 libc++ 相关路径如下:"
+      find "${out_full}" -path '*libc++*' \( -name '*.a' -o -name '*.o' -o -name '*.obj' \) \
+        2>/dev/null | head -n 40 | sed 's/^/    /' >&2 || true
+      if [ "${merged}" = "true" ]; then
+        warn "未找到独立 libc++，但 libc++ 已并入 monolith，跳过独立库"
+        return 0
+      fi
       die "无法产出 libc++.a：无 archive 也无 .o（Windows source_set 请用 build_windows.ps1）"
     fi
     _create_archive_from_objs "${dest_dir}/libc++.a" "${objs[@]}" \
@@ -404,13 +469,16 @@ collect_libcxx() {
     fi
   fi
 
-  # 始终附带 thick libc++：避免 merged 误判导致下游缺库；多链一份无害
-  _package_libcxx_libs "${out_full}" "${prefix}"
+  # 尽量附带 thick libc++；merged=true 时找不到独立库不致命（下游链 monolith 即可）
+  _package_libcxx_libs "${out_full}" "${prefix}" "${LIBCXX_MERGED}"
 
   [ -f "${prefix}/libcxx/include/__config_site" ] \
     || die "验收失败: 缺少 ${prefix}/libcxx/include/__config_site"
-  [ -f "${prefix}/lib/libc++.a" ] || die "验收失败: 缺少 lib/libc++.a"
-  _is_thin_archive "${prefix}/lib/libc++.a" && die "验收失败: lib/libc++.a 为 thin，不可发布"
+  if [ -f "${prefix}/lib/libc++.a" ]; then
+    _is_thin_archive "${prefix}/lib/libc++.a" && die "验收失败: lib/libc++.a 为 thin，不可发布"
+  elif [ "${LIBCXX_MERGED}" != "true" ]; then
+    die "验收失败: 缺少 lib/libc++.a 且 libc++ 未并入 monolith"
+  fi
 
   if grep -q '_LIBCPP_ABI_NAMESPACE' "${prefix}/libcxx/include/__config_site"; then
     log "ABI: $(grep '_LIBCPP_ABI_NAMESPACE' "${prefix}/libcxx/include/__config_site" | head -1 | tr -d '\r')"

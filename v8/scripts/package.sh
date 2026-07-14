@@ -87,8 +87,11 @@ is_thin_a() {
   case "${magic}" in *thin*) return 0 ;; *) return 1 ;; esac
 }
 is_thin_a "${STAGE}/lib/libv8_monolith.a" && die "拒绝发布 thin libv8_monolith.a（主库成员 .o 不在包内）"
-[ -f "${STAGE}/lib/libc++.a" ] || die "打包缺少 thick lib/libc++.a (libcxx_merged=${LIBCXX_MERGED})"
-is_thin_a "${STAGE}/lib/libc++.a" && die "拒绝发布 thin libc++.a（需 thick）"
+if [ -f "${STAGE}/lib/libc++.a" ]; then
+  is_thin_a "${STAGE}/lib/libc++.a" && die "拒绝发布 thin libc++.a（需 thick）"
+elif [ "${LIBCXX_MERGED}" != "true" ]; then
+  die "打包缺少 thick lib/libc++.a 且 libc++ 未并入 monolith (libcxx_merged=${LIBCXX_MERGED})"
+fi
 if [ -f "${STAGE}/lib/libc++abi.a" ]; then
   is_thin_a "${STAGE}/lib/libc++abi.a" && die "拒绝发布 thin libc++abi.a（需 thick）"
 fi

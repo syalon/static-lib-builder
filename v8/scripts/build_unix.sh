@@ -146,6 +146,14 @@ verify_linux_tls_reloc() {
 log "生成的 args.gn:"
 sed 's/^/    /' "${ARGS_GN}"
 
+# --- 关闭 thin archive（让 libc++.a 等直接产出 thick，可分发）----------------
+# Chromium 默认 thin 归档只引用 .o 路径，拷进产物包即失效；官方注释也说做可分发
+# 静态库须移除 thin_archive config。这里在 gn gen 前置空该 config，从根上避免
+# 之前脆弱的 “thin -> thick” 转换（几乎所有平台都在此失败）。
+log "关闭 thin archive (build/config/compiler/BUILD.gn)"
+python3 "${SCRIPT_DIR}/disable_thin_archive.py" "${V8_SRC}" \
+  || die "关闭 thin archive 失败（见上）"
+
 # --- gn gen + ninja ----------------------------------------------------------
 cd "${V8_SRC}"
 log "gn gen ${OUT_DIR}"
