@@ -316,28 +316,17 @@ _find_libcxx_objs() {
   all="$(_find_libcxx_objs_raw "${out_full}" "${which}")"
   [ -n "${all}" ] || return 0
 
-  # 有参考架构时按架构挑选。两级:
-  #   tier1: 默认工具链 obj/ 目录（GN 保证=目标架构）——arch 匹配或无法判定都接受，
-  #          这样即使个别文件探测失败（如 bitcode）也不会漏掉目标对象。
-  #   tier2: 全树范围内严格 arch 匹配（用于目标 libc++ 不在 obj/ 直下的情形）。
-  # host/sim 工具链一律在 ${out_full}/<toolchain>/obj/ 子目录下，不会落入 tier1。
+  # 有参考架构时严格按实际文件架构挑选。目录名只表示 GN 工具链关系，不能作为
+  # 文件架构依据（例如 clang_arm64_v8_x64 中是 host arm64 libc++）。
   if [ -n "${ref_arch}" ]; then
-    local o oa obj_hits="" arch_hits=""
+    local o oa matched=""
     while IFS= read -r o; do
       [ -n "${o}" ] || continue
       oa="$(_file_arch "${o}")"
-      case "${o}" in
-        "${out_full}/obj/"*)
-          if [ -z "${oa}" ] || [ "${oa}" = "${ref_arch}" ]; then
-            obj_hits+="${o}"$'\n'
-          fi
-          ;;
-      esac
-      [ "${oa}" = "${ref_arch}" ] && arch_hits+="${o}"$'\n'
+      [ "${oa}" = "${ref_arch}" ] && matched+="${o}"$'\n'
     done <<< "${all}"
-    [ -n "${obj_hits}" ]  && { printf '%s' "${obj_hits}";  return 0; }
-    [ -n "${arch_hits}" ] && { printf '%s' "${arch_hits}"; return 0; }
-    # 无匹配：返回空，交由调用方处理，绝不打包错架构。
+    [ -n "${matched}" ] && { printf '%s' "${matched}"; return 0; }
+    # 无匹配：返回空，交由调用方处理；未知架构也不放行。
     return 0
   fi
 
@@ -377,9 +366,7 @@ _find_named_archive() {
   local name="$2"        # libc++.a | libc++abi.a
   local ref_arch="${3:-}"
   local f fa
-  # 优先默认工具链 obj/ 下的常规位置。此处 obj/ 是 GN 默认工具链输出 = 目标架构，
-  # 故 arch 匹配或“无法判定”（如 thin/bitcode 探测失败）都采用；仅当探测出的架构
-  # 明确不一致时才跳过（防御性，正常不会发生）。
+  # 优先默认工具链 obj/ 下的常规位置，但仍以实际架构校验结果为准。
   for f in \
     "${out_full}/obj/buildtools/third_party/libc++/${name}" \
     "${out_full}/obj/buildtools/third_party/libc++abi/${name}" \
@@ -391,9 +378,7 @@ _find_named_archive() {
       echo "${f}"; return 0
     fi
     fa="$(_file_arch "${f}")"
-    if [ -z "${fa}" ] || [ "${fa}" = "${ref_arch}" ]; then
-      echo "${f}"; return 0
-    fi
+    [ "${fa}" = "${ref_arch}" ] && { echo "${f}"; return 0; }
   done
 
   # 递归全树。有参考架构：只接受架构一致者；无参考架构：退回“优先 obj/”。

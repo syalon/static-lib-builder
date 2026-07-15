@@ -159,8 +159,19 @@ cd "${V8_SRC}"
 log "gn gen ${OUT_DIR}"
 gn gen "${OUT_DIR}"
 
-log "ninja v8_monolith"
-ninja -C "${OUT_DIR}" -j "${JOBS}" v8_monolith
+# v8_monolith 的构建图只会链接/构建生成 mksnapshot 等 host 工具所需的 libc++。
+# 在交叉编译中（Apple Silicon -> macOS x64、Linux x64 -> Android arm64），这会
+# 只留下 clang_<host>_v8_<target>/ 下的 host libc++，而默认 target toolchain 的
+# libc++ 根本不会产出。显式请求默认工具链 archive，确保最终包有目标架构运行库。
+#
+# V8 14.9 锁定的 Chromium c++.gni 在非 Windows、非 component build 下将
+# //buildtools/third_party/libc++:libc++ 定义为 static_library；该目标同时依赖
+# target libc++abi，因此 Ninja 会一并构建二者。
+TARGET_LIBCXX="obj/buildtools/third_party/libc++/libc++.a"
+log "ninja v8_monolith + target libc++"
+ninja -C "${OUT_DIR}" -j "${JOBS}" v8_monolith "${TARGET_LIBCXX}"
+[ -f "${V8_SRC}/${OUT_DIR}/${TARGET_LIBCXX}" ] \
+  || die "目标架构 libc++ 未产出: ${V8_SRC}/${OUT_DIR}/${TARGET_LIBCXX}"
 
 verify_linux_tls_reloc
 
