@@ -441,6 +441,29 @@ $must = Join-Path $Prefix "lib\libc++.lib"
 if (-not (Test-Path $must)) { throw "验收失败: 缺少 lib/libc++.lib" }
 if (Test-IsThinLib $must) { throw "验收失败: lib/libc++.lib 为 thin，不可发布" }
 
+# 架构验收: libc++.lib 必须与 v8_monolith.lib 同架构（Windows 为原生 x64，
+# 此闸为防御性，与 Unix 侧一致，杜绝任何架构错配流出）。
+$pyForArch = $null
+foreach ($p in @("python3", "python", "vpython3")) {
+    $c = Get-Command $p -ErrorAction SilentlyContinue
+    if ($c) { $pyForArch = $c.Source; break }
+}
+if ($pyForArch) {
+    $archScript = Join-Path $ScriptDir "detect_arch.py"
+    $monoArch = (& $pyForArch $archScript $monoOut 2>$null)
+    $cxxArch  = (& $pyForArch $archScript $must 2>$null)
+    if ($monoArch -and $cxxArch -and ($monoArch -ne "unknown") -and ($cxxArch -ne "unknown")) {
+        if ($monoArch -ne $cxxArch) {
+            throw "验收失败: libc++.lib 架构=$cxxArch 与 v8_monolith.lib=$monoArch 不一致"
+        }
+        Write-Host "==> 架构验收通过: libc++.lib 与 monolith 均为 $monoArch"
+    } else {
+        Write-Host "==> WARN: 无法判定架构 (mono=$monoArch cxx=$cxxArch)，跳过架构验收"
+    }
+} else {
+    Write-Host "==> WARN: 无 python，跳过架构验收"
+}
+
 # --- 6) 打包为 zip -----------------------------------------------------------
 $Dist    = Join-Path $LibRoot "dist"
 $PkgName = "$PackageName-$PkgVersion-$Target"

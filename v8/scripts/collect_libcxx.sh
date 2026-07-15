@@ -62,6 +62,23 @@ _is_thin_archive() {
   esac
 }
 
+# 探测对象/静态库架构（跨 ELF/Mach-O）。输出规范名(如 x86_64/aarch64)或空。
+# 依赖同目录 detect_arch.py；无 python 则输出空（调用方按“未知”处理）。
+_LIBCXX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_file_arch() {
+  local f="$1"
+  [ -f "${f}" ] || return 1
+  local py=""
+  if command -v python3 >/dev/null 2>&1; then
+    py="python3"
+  elif command -v python >/dev/null 2>&1; then
+    py="python"
+  else
+    return 1
+  fi
+  "${py}" "${_LIBCXX_SCRIPT_DIR}/detect_arch.py" "${f}" 2>/dev/null || true
+}
+
 # 用 @rsp 或分批写入，避免 ARG_MAX（libc++ 目标文件可达数百个）
 _libcxx_ar_rcs() {
   local dest="$1"
@@ -245,14 +262,30 @@ _require_symbol_or_die() {
 }
 
 # 收集 libc++ / libc++abi 的 .o/.obj（递归全树，覆盖交叉编译的工具链子目录）
-# 为避免混入不同架构，优先默认工具链 (${out_full}/obj/，与 monolith 同架构)，
-# 该处无对象时再回退整棵树。
+# $3 ref_arch: 目标架构（来自 monolith）。交叉编译时构建树含 host 与 target 两份
+# libc++，必须按架构过滤，只留与 monolith 一致的对象，否则会把 host 架构 .o 误打包。
 _find_libcxx_objs() {
   local out_full="$1"
-  local which="$2"  # libcxx | libcxxabi
-  local all preferred
+  local which="$2"
+  local ref_arch="${3:-}"
+  local all
   all="$(_find_libcxx_objs_raw "${out_full}" "${which}")"
   [ -n "${all}" ] || return 0
+
+  # 有参考架构时严格过滤（唯一可靠依据）；无从判定架构时才退回路径优先。
+  if [ -n "${ref_arch}" ]; then
+    local o oa matched=""
+    while IFS= read -r o; do
+      [ -n "${o}" ] || continue
+      oa="$(_file_arch "${o}")"
+      [ "${oa}" = "${ref_arch}" ] && matched+="${o}"$'\n'
+    done <<< "${all}"
+    [ -n "${matched}" ] && { printf '%s' "${matched}"; return 0; }
+    # 无匹配：返回空，交由调用方按“找不到目标架构对象”处理，绝不打包错架构。
+    return 0
+  fi
+
+  local preferred
   preferred="$(printf '%s\n' "${all}" | grep -E "^${out_full}/obj/" || true)"
   if [ -n "${preferred}" ]; then
     printf '%s\n' "${preferred}"
@@ -280,29 +313,41 @@ _find_libcxx_objs_raw() {
       done
 }
 
-# 递归查找 libc++.a / libc++abi.a，优先默认工具链 (${out_full}/obj/)。
+# 递归查找 libc++.a / libc++abi.a。
+# $3 ref_arch: 目标架构（来自 monolith）。交叉编译树里同时有 host/target 两份库，
+# 必须按架构精确匹配，杜绝把 host 架构库误当 target 打包。
 _find_named_archive() {
   local out_full="$1"
-  local name="$2"  # libc++.a | libc++abi.a
-  local f
+  local name="$2"        # libc++.a | libc++abi.a
+  local ref_arch="${3:-}"
+  local f fa
+  # 优先默认工具链 obj/ 下的常规位置，但仍须架构校验通过才采用。
   for f in \
     "${out_full}/obj/buildtools/third_party/libc++/${name}" \
     "${out_full}/obj/buildtools/third_party/libc++abi/${name}" \
     "${out_full}/obj/third_party/libc++/${name}" \
     "${out_full}/obj/third_party/libc++abi/${name}"
   do
-    if [ -f "${f}" ]; then
-      echo "${f}"
-      return 0
+    [ -f "${f}" ] || continue
+    if [ -z "${ref_arch}" ]; then
+      echo "${f}"; return 0
     fi
+    fa="$(_file_arch "${f}")"
+    [ "${fa}" = "${ref_arch}" ] && { echo "${f}"; return 0; }
   done
-  # 递归全树：优先默认工具链 obj/，否则取首个 libc++ 匹配。
+
+  # 递归全树。有参考架构：只接受架构一致者；无参考架构：退回“优先 obj/”。
   local best=""
   while IFS= read -r f; do
     case "${f}" in
       */buildtools/third_party/libc++*|*/third_party/libc++*|*/libc++/*|*/libc++abi/*) ;;
       *) continue ;;
     esac
+    if [ -n "${ref_arch}" ]; then
+      fa="$(_file_arch "${f}")"
+      [ "${fa}" = "${ref_arch}" ] && { echo "${f}"; return 0; }
+      continue
+    fi
     case "${f}" in
       "${out_full}/obj/"*) echo "${f}"; return 0 ;;
     esac
@@ -314,35 +359,37 @@ _find_named_archive() {
 
 # 产出 thick libc++.a / libc++abi.a 到 prefix/lib。
 # $3 merged: monolith 是否已含 libc++（true 时找不到独立库不致命）。
+# $4 ref_arch: 目标架构（来自 monolith），用于交叉编译时精确挑选同架构 libc++。
 _package_libcxx_libs() {
   local out_full="$1"
   local prefix="$2"
   local merged="${3:-false}"
+  local ref_arch="${4:-}"
   local dest_dir="${prefix}/lib"
   mkdir -p "${dest_dir}"
 
   local src_cxx="" src_abi=""
-  src_cxx="$(_find_named_archive "${out_full}" "libc++.a" || true)"
-  src_abi="$(_find_named_archive "${out_full}" "libc++abi.a" || true)"
+  src_cxx="$(_find_named_archive "${out_full}" "libc++.a" "${ref_arch}" || true)"
+  src_abi="$(_find_named_archive "${out_full}" "libc++abi.a" "${ref_arch}" || true)"
 
   if [ -n "${src_cxx}" ]; then
     _thicken_archive "${src_cxx}" "${dest_dir}/libc++.a" "${out_full}"
     log "  已打包 thick libc++.a (from ${src_cxx})"
   else
-    log "  未找到 libc++.a，尝试从 .o 组 thick 库"
+    log "  未找到匹配架构(${ref_arch:-any})的 libc++.a，尝试从 .o 组 thick 库"
     local objs=()
     while IFS= read -r o; do
       [ -n "${o}" ] && objs+=("${o}")
-    done < <(_find_libcxx_objs "${out_full}" libcxx)
+    done < <(_find_libcxx_objs "${out_full}" libcxx "${ref_arch}")
     if [ "${#objs[@]}" -eq 0 ]; then
       log "  诊断: out 目录下 libc++ 相关路径如下:"
       find "${out_full}" -path '*libc++*' \( -name '*.a' -o -name '*.o' -o -name '*.obj' \) \
         2>/dev/null | head -n 40 | sed 's/^/    /' >&2 || true
       if [ "${merged}" = "true" ]; then
-        warn "未找到独立 libc++，但 libc++ 已并入 monolith，跳过独立库"
+        warn "未找到独立 libc++（架构=${ref_arch:-any}），但已并入 monolith，跳过独立库"
         return 0
       fi
-      die "无法产出 libc++.a：无 archive 也无 .o（Windows source_set 请用 build_windows.ps1）"
+      die "无法产出 libc++.a：无匹配架构(${ref_arch:-any})的 archive 或 .o"
     fi
     _create_archive_from_objs "${dest_dir}/libc++.a" "${objs[@]}" \
       || die "从 .o 创建 libc++.a 失败"
@@ -356,7 +403,7 @@ _package_libcxx_libs() {
     local abi_objs=()
     while IFS= read -r o; do
       [ -n "${o}" ] && abi_objs+=("${o}")
-    done < <(_find_libcxx_objs "${out_full}" libcxxabi)
+    done < <(_find_libcxx_objs "${out_full}" libcxxabi "${ref_arch}")
     if [ "${#abi_objs[@]}" -gt 0 ]; then
       _create_archive_from_objs "${dest_dir}/libc++abi.a" "${abi_objs[@]}" \
         || die "从 .o 创建 libc++abi.a 失败"
@@ -371,6 +418,27 @@ _package_libcxx_libs() {
   _is_thin_archive "${dest_dir}/libc++.a" && die "验收失败: libc++.a 仍为 thin archive"
   if [ -f "${dest_dir}/libc++abi.a" ]; then
     _is_thin_archive "${dest_dir}/libc++abi.a" && die "验收失败: libc++abi.a 仍为 thin archive"
+  fi
+
+  # 硬验收: 架构必须与 monolith 一致（拦截交叉编译误打 host 架构 libc++）。
+  if [ -n "${ref_arch}" ]; then
+    local got
+    got="$(_file_arch "${dest_dir}/libc++.a")"
+    if [ -n "${got}" ] && [ "${got}" != "${ref_arch}" ]; then
+      die "验收失败: libc++.a 架构=${got} 与 monolith=${ref_arch} 不一致（交叉编译错配）"
+    fi
+    if [ -z "${got}" ]; then
+      warn "无法探测 libc++.a 架构（缺 python?），跳过架构验收；期望=${ref_arch}"
+    else
+      log "  验收通过: libc++.a 架构=${got} 与 monolith 一致"
+    fi
+    if [ -f "${dest_dir}/libc++abi.a" ]; then
+      local got_abi
+      got_abi="$(_file_arch "${dest_dir}/libc++abi.a")"
+      if [ -n "${got_abi}" ] && [ "${got_abi}" != "${ref_arch}" ]; then
+        die "验收失败: libc++abi.a 架构=${got_abi} 与 monolith=${ref_arch} 不一致"
+      fi
+    fi
   fi
 
   if _require_symbol_or_die "${dest_dir}/libc++.a" "__libcpp_verbose_abort" "libc++.a"; then
@@ -458,6 +526,15 @@ collect_libcxx() {
   _is_thin_archive "${monolith}" \
     && die "验收失败: libv8_monolith.a 为 thin archive，不可发布 (检查 v8_monolithic/complete_static_lib)"
 
+  # 目标架构以 monolith 为准；交叉编译时据此精确挑选同架构 libc++。
+  local ref_arch
+  ref_arch="$(_file_arch "${monolith}")"
+  if [ -n "${ref_arch}" ]; then
+    log "目标架构 (monolith): ${ref_arch}"
+  else
+    warn "无法探测 monolith 架构（缺 python?），libc++ 收集将退回路径优先，无法拦截交叉编译错配"
+  fi
+
   local rc=0
   _archive_defines_symbol "${monolith}" "__libcpp_verbose_abort" || rc=$?
   if [ "${rc}" -eq 0 ]; then
@@ -473,7 +550,7 @@ collect_libcxx() {
   fi
 
   # 尽量附带 thick libc++；merged=true 时找不到独立库不致命（下游链 monolith 即可）
-  _package_libcxx_libs "${out_full}" "${prefix}" "${LIBCXX_MERGED}"
+  _package_libcxx_libs "${out_full}" "${prefix}" "${LIBCXX_MERGED}" "${ref_arch}"
 
   [ -f "${prefix}/libcxx/include/__config_site" ] \
     || die "验收失败: 缺少 ${prefix}/libcxx/include/__config_site"

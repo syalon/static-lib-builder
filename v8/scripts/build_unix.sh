@@ -175,10 +175,10 @@ cp -R "${V8_SRC}/include/." "${PREFIX}/include/"
 
 # Chromium custom libc++ / libc++abi（下游必须用这些头与 ABI，见 BUILD_INFO）
 collect_libcxx "${V8_SRC}" "${OUT_DIR}" "${PREFIX}"
-# 写入供 package.sh 读取的元数据
+# 写入供 package.sh 读取的元数据（变量名须与 package.sh source 后读取的大写一致）
 {
-  echo "custom_libcxx=true"
-  echo "libcxx_merged=${LIBCXX_MERGED}"
+  echo "CUSTOM_LIBCXX=true"
+  echo "LIBCXX_MERGED=${LIBCXX_MERGED}"
 } > "${PREFIX}/LIBCXX_META.txt"
 
 log "完成: 产物位于 ${PREFIX}"

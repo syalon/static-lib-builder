@@ -54,13 +54,15 @@ STAGE="${DIST}/${PKG_NAME}"
 [ -d "${PREFIX}/libcxx/include" ] || die "未找到 ${PREFIX}/libcxx/include，请先用 use_custom_libcxx 构建"
 [ -f "${PREFIX}/libcxx/include/__config_site" ] || die "缺少 ${PREFIX}/libcxx/include/__config_site"
 
-# 读取 build_unix.sh 写入的 libc++ 元数据
+# 读取 build_unix.sh 写入的 libc++ 元数据（大写 KEY=VALUE）
 CUSTOM_LIBCXX="true"
 LIBCXX_MERGED="unknown"
 if [ -f "${PREFIX}/LIBCXX_META.txt" ]; then
   # shellcheck disable=SC1090
   source "${PREFIX}/LIBCXX_META.txt"
 fi
+[ "${LIBCXX_MERGED}" = "true" ] || [ "${LIBCXX_MERGED}" = "false" ] \
+  || die "LIBCXX_META.txt 缺少有效 LIBCXX_MERGED（当前=${LIBCXX_MERGED}）"
 
 rm -rf "${STAGE}"
 mkdir -p "${STAGE}/lib"
