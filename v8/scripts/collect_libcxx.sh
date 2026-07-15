@@ -62,21 +62,65 @@ _is_thin_archive() {
   esac
 }
 
-# 探测对象/静态库架构（跨 ELF/Mach-O）。输出规范名(如 x86_64/aarch64)或空。
-# 依赖同目录 detect_arch.py；无 python 则输出空（调用方按“未知”处理）。
+# 探测对象/静态库架构（跨 ELF/Mach-O/COFF/bitcode）。输出规范名或空。
+# 主路径: detect_arch.py（快、无依赖）；对其无法识别者（典型: macOS wrapped
+# bitcode、arm64 CPU_TYPE_ANY）用系统工具兜底（lipo/readelf/file），确保交叉
+# 编译时能可靠区分 host 与 target 架构。
 _LIBCXX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_file_arch_syscmd() {
+  local f="$1"
+  # macOS: lipo 能处理 .o / .a / bitcode
+  if command -v lipo >/dev/null 2>&1; then
+    local out
+    out="$(lipo -archs "${f}" 2>/dev/null | tr ' ' '\n' | head -1 || true)"
+    case "${out}" in
+      arm64|arm64e) echo "aarch64"; return 0 ;;
+      x86_64|x86_64h) echo "x86_64"; return 0 ;;
+      i386) echo "i386"; return 0 ;;
+    esac
+  fi
+  # Linux: readelf（对普通 ELF 对象/可执行；archive 由 detect_arch.py 处理）
+  if command -v readelf >/dev/null 2>&1; then
+    local m
+    m="$(readelf -h "${f}" 2>/dev/null | sed -n 's/.*Machine:[[:space:]]*//p' | head -1 || true)"
+    case "${m}" in
+      *X86-64*|*x86-64*) echo "x86_64"; return 0 ;;
+      *AArch64*|*aarch64*) echo "aarch64"; return 0 ;;
+      *80386*) echo "i386"; return 0 ;;
+      *ARM*) echo "arm"; return 0 ;;
+    esac
+  fi
+  # 通用: file
+  if command -v file >/dev/null 2>&1; then
+    local d
+    d="$(file -b "${f}" 2>/dev/null || true)"
+    case "${d}" in
+      *x86-64*|*x86_64*) echo "x86_64"; return 0 ;;
+      *aarch64*|*arm64*|*ARM64*) echo "aarch64"; return 0 ;;
+      *80386*|*i386*) echo "i386"; return 0 ;;
+    esac
+  fi
+  return 0
+}
+
 _file_arch() {
   local f="$1"
   [ -f "${f}" ] || return 1
-  local py=""
+  local arch="" py=""
   if command -v python3 >/dev/null 2>&1; then
     py="python3"
   elif command -v python >/dev/null 2>&1; then
     py="python"
-  else
-    return 1
   fi
-  "${py}" "${_LIBCXX_SCRIPT_DIR}/detect_arch.py" "${f}" 2>/dev/null || true
+  if [ -n "${py}" ]; then
+    arch="$("${py}" "${_LIBCXX_SCRIPT_DIR}/detect_arch.py" "${f}" 2>/dev/null || true)"
+  fi
+  if [ -n "${arch}" ] && [ "${arch}" != "unknown" ]; then
+    echo "${arch}"; return 0
+  fi
+  # detect_arch 未识别 → 系统工具兜底
+  _file_arch_syscmd "${f}"
 }
 
 # 用 @rsp 或分批写入，避免 ARG_MAX（libc++ 目标文件可达数百个）
@@ -272,16 +316,28 @@ _find_libcxx_objs() {
   all="$(_find_libcxx_objs_raw "${out_full}" "${which}")"
   [ -n "${all}" ] || return 0
 
-  # 有参考架构时严格过滤（唯一可靠依据）；无从判定架构时才退回路径优先。
+  # 有参考架构时按架构挑选。两级:
+  #   tier1: 默认工具链 obj/ 目录（GN 保证=目标架构）——arch 匹配或无法判定都接受，
+  #          这样即使个别文件探测失败（如 bitcode）也不会漏掉目标对象。
+  #   tier2: 全树范围内严格 arch 匹配（用于目标 libc++ 不在 obj/ 直下的情形）。
+  # host/sim 工具链一律在 ${out_full}/<toolchain>/obj/ 子目录下，不会落入 tier1。
   if [ -n "${ref_arch}" ]; then
-    local o oa matched=""
+    local o oa obj_hits="" arch_hits=""
     while IFS= read -r o; do
       [ -n "${o}" ] || continue
       oa="$(_file_arch "${o}")"
-      [ "${oa}" = "${ref_arch}" ] && matched+="${o}"$'\n'
+      case "${o}" in
+        "${out_full}/obj/"*)
+          if [ -z "${oa}" ] || [ "${oa}" = "${ref_arch}" ]; then
+            obj_hits+="${o}"$'\n'
+          fi
+          ;;
+      esac
+      [ "${oa}" = "${ref_arch}" ] && arch_hits+="${o}"$'\n'
     done <<< "${all}"
-    [ -n "${matched}" ] && { printf '%s' "${matched}"; return 0; }
-    # 无匹配：返回空，交由调用方按“找不到目标架构对象”处理，绝不打包错架构。
+    [ -n "${obj_hits}" ]  && { printf '%s' "${obj_hits}";  return 0; }
+    [ -n "${arch_hits}" ] && { printf '%s' "${arch_hits}"; return 0; }
+    # 无匹配：返回空，交由调用方处理，绝不打包错架构。
     return 0
   fi
 
@@ -321,7 +377,9 @@ _find_named_archive() {
   local name="$2"        # libc++.a | libc++abi.a
   local ref_arch="${3:-}"
   local f fa
-  # 优先默认工具链 obj/ 下的常规位置，但仍须架构校验通过才采用。
+  # 优先默认工具链 obj/ 下的常规位置。此处 obj/ 是 GN 默认工具链输出 = 目标架构，
+  # 故 arch 匹配或“无法判定”（如 thin/bitcode 探测失败）都采用；仅当探测出的架构
+  # 明确不一致时才跳过（防御性，正常不会发生）。
   for f in \
     "${out_full}/obj/buildtools/third_party/libc++/${name}" \
     "${out_full}/obj/buildtools/third_party/libc++abi/${name}" \
@@ -333,7 +391,9 @@ _find_named_archive() {
       echo "${f}"; return 0
     fi
     fa="$(_file_arch "${f}")"
-    [ "${fa}" = "${ref_arch}" ] && { echo "${f}"; return 0; }
+    if [ -z "${fa}" ] || [ "${fa}" = "${ref_arch}" ]; then
+      echo "${f}"; return 0
+    fi
   done
 
   # 递归全树。有参考架构：只接受架构一致者；无参考架构：退回“优先 obj/”。
@@ -382,9 +442,14 @@ _package_libcxx_libs() {
       [ -n "${o}" ] && objs+=("${o}")
     done < <(_find_libcxx_objs "${out_full}" libcxx "${ref_arch}")
     if [ "${#objs[@]}" -eq 0 ]; then
-      log "  诊断: out 目录下 libc++ 相关路径如下:"
-      find "${out_full}" -path '*libc++*' \( -name '*.a' -o -name '*.o' -o -name '*.obj' \) \
-        2>/dev/null | head -n 40 | sed 's/^/    /' >&2 || true
+      log "  诊断: out 目录下 libc++ 相关文件及其探测架构（期望=${ref_arch:-any}）:"
+      local _dpath _darch
+      while IFS= read -r _dpath; do
+        [ -n "${_dpath}" ] || continue
+        _darch="$(_file_arch "${_dpath}")"
+        printf '    [%s] %s\n' "${_darch:-未知}" "${_dpath}" >&2
+      done < <(find "${out_full}" -path '*libc++*' \
+        \( -name '*.a' -o -name '*.o' -o -name '*.obj' \) 2>/dev/null | head -n 60)
       if [ "${merged}" = "true" ]; then
         warn "未找到独立 libc++（架构=${ref_arch:-any}），但已并入 monolith，跳过独立库"
         return 0

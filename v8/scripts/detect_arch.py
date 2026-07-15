@@ -108,12 +108,24 @@ def _arch_from_coff(data: bytes):
     return arch
 
 
+def _arch_from_bitcode(data: bytes):
+    # LLVM bitcode wrapper (macOS clang 常用): 磁盘字节 de c0 17 0b = 0x0B17C0DE。
+    # 头: magic(4) version(4) offset(4) size(4) cputype(4)...，cputype 为 Mach-O 编码。
+    # 注意: arm64 的 bitcode cputype 可能是 CPU_TYPE_ANY(0xFFFFFFFF)，此时无法判定，
+    #       返回 None，交由上层的系统工具(lipo)兜底。
+    if len(data) < 20 or data[:4] != b"\xde\xc0\x17\x0b":
+        return None
+    (cputype,) = struct.unpack_from("<i", data, 16)
+    return _MACHO_CPU.get(cputype & 0xFFFFFFFF)
+
+
 def _arch_from_object_bytes(data: bytes):
     return (
         _arch_from_elf(data)
         or _arch_from_macho(data)
         or _arch_from_fat_macho(data)
         or _arch_from_coff(data)
+        or _arch_from_bitcode(data)
     )
 
 
